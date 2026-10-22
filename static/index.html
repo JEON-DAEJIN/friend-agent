@@ -22,6 +22,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 "Pretendard Va
 button,input,textarea,select{font:inherit;color:inherit}
 button{cursor:pointer}
 .banner{background:#ffe08a;color:#5a4300;text-align:center;font-weight:700;font-size:13px;padding:6px}
+.buildtag{position:fixed;left:8px;bottom:6px;font-size:11px;color:var(--ink-3);background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:2px 8px;z-index:5;pointer-events:none}
 
 .app{display:grid;grid-template-columns:264px minmax(0,1fr) 360px;height:100vh;height:100dvh}
 .app.no-panel{grid-template-columns:264px minmax(0,1fr)}
@@ -197,6 +198,7 @@ textarea.input{min-height:80px;resize:vertical}
 </head>
 <body>
 <!--ENV_BANNER-->
+<div class="buildtag" id="buildTag" hidden></div>
 <div class="app" id="app">
   <aside class="side" id="side">
     <div class="brand"><i></i>하루친구</div>
@@ -659,6 +661,10 @@ $("#deleteAll").onclick = async () => {
 
 // ── 시작 ─────────────────────────────────────────────────────
 (async () => {
+  try {
+    const v = await (await fetch("/version")).json();
+    if (v.commit) { $("#buildTag").textContent = `빌드 ${v.commit.slice(0, 7)}`; $("#buildTag").hidden = false; }
+  } catch (err) { console.error(err); }
   cfg = await (await fetch("/api/config")).json();
   options = cfg.options;
   if (!cfg.show_turn_panel) { $("#app").classList.add("no-panel"); $("#panel").hidden = true; }
