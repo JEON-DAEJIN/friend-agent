@@ -1,0 +1,101 @@
+# 버튼 하나로 이전 리비전으로 되돌린다 (원클릭 롤백).
+# 사용법: GitHub > Actions > rollback > Run workflow 에서 서비스(staging/production)와 되돌아갈 리비전 이름을 넣는다.
+# 되돌아갈 리비전 이름은 Cloud Run 콘솔의 리비전 탭이나, 배포 로그의 "지금 트래픽을 받는 리비전" 줄에서 확인한다.
+# production 승인은 거치지 않는다. 대신 입력 형식과 리비전 상태를 먼저 검사하고, 실행할 수 있는 사람은 저장소에 쓰기 권한이 있는 사람뿐이다.
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 되돌릴 서비스
+        type: choice
+        options: [staging, production]
+        default: staging
+      revision:
+        description: 되돌아갈 리비전 이름 (예 friend-agent-00025-txp)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    # 같은 서비스의 배포와 겹치지 않게 deploy.yml 과 같은 그룹 이름을 쓴다
+    concurrency:
+      group: deploy-${{ inputs.target == 'production' && 'main' || 'staging' }}
+      cancel-in-progress: false
+    # 입력값은 셸에 직접 끼워 넣지 않고 환경변수로만 넘긴다
+    env:
+      TARGET: ${{ inputs.target }}
+      REVISION: ${{ inputs.revision }}
+    steps:
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: 입력과 리비전 확인
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            production) SERVICE=friend-agent ;;
+            staging) SERVICE=friend-agent-staging ;;
+            *) echo "서비스는 staging 또는 production 이어야 한다"; exit 1 ;;
+          esac
+          # 서비스 이름 + 5자리 번호 + 3글자 꼴만 받는다. 그래서 staging 리비전을 production 에 쓰는 실수도 막힌다
+          if ! [[ "$REVISION" =~ ^${SERVICE}-[0-9]{5}-[a-z0-9]{3}$ ]]; then
+            echo "리비전 이름이 $SERVICE 의 것이 아니다: $REVISION"
+            exit 1
+          fi
+          INFO=$(gcloud run revisions describe "$REVISION" --region us-central1 --format json)
+          OWNER=$(echo "$INFO" | jq -r '.metadata.labels["serving.knative.dev/service"]')
+          READY=$(echo "$INFO" | jq -r '.status.conditions[] | select(.type=="Ready") | .status')
+          if [ "$OWNER" != "$SERVICE" ] || [ "$READY" != "True" ]; then
+            echo "되돌아갈 수 없는 리비전이다 (서비스: $OWNER, Ready: $READY)"
+            exit 1
+          fi
+          CURRENT=$(gcloud run services describe "$SERVICE" --region us-central1 --format json | jq -r '.status.traffic | max_by(.percent) | .revisionName')
+          echo "SERVICE=$SERVICE" >> "$GITHUB_ENV"
+          echo "CURRENT=$CURRENT" >> "$GITHUB_ENV"
+          echo "$SERVICE: 지금 $CURRENT 이 트래픽을 받는다. $REVISION 으로 되돌린다"
+
+      - name: 롤백 (트래픽 100%를 그 리비전으로)
+        run: |
+          set -euo pipefail
+          echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
+          gcloud run services update-traffic "$SERVICE" --region us-central1 --to-revisions "$REVISION=100"
+
+      - name: 확인 (서비스 주소의 /version)
+        run: |
+          set -euo pipefail
+          URL=$(gcloud run services describe "$SERVICE" --region us-central1 --format='value(status.url)')
+          for i in $(seq 1 15); do
+            VER=$(curl -fsS -m 5 "$URL/version" || echo '{}')
+            GOT=$(echo "$VER" | jq -r '.revision // "없음"')
+            if [ "$GOT" = "$REVISION" ]; then
+              SECS=$(( $(date +%s) - STARTED ))
+              COMMIT=$(echo "$VER" | jq -r '.commit')
+              echo "[$i/15] /version 이 $REVISION (커밋 $COMMIT) 로 바뀌었다. 롤백 명령부터 ${SECS}초"
+              {
+                echo "### 롤백 결과"
+                echo "| 항목 | 값 |"
+                echo "|---|---|"
+                echo "| 서비스 | $SERVICE |"
+                echo "| 이전 | $CURRENT |"
+                echo "| 이후 | $REVISION (커밋 \`$COMMIT\`) |"
+                echo "| 롤백 명령부터 확인까지 | ${SECS}초 |"
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "참고: 트래픽이 이 리비전에 고정됐다. 다음 정상 배포의 전환 단계가 풀어 준다. 새 버전으로 돌아가려면 같은 버튼에 새 리비전 이름을 넣는다"
+              exit 0
+            fi
+            echo "[$i/15] 아직 $GOT 이 응답 중. 3초 뒤 다시 확인한다"
+            sleep 3
+          done
+          echo "롤백했는데 /version 이 $REVISION 으로 바뀌지 않았다"
+          exit 1
