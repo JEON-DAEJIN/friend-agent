@@ -84,8 +84,7 @@ def health():
 
 @app.get("/version")
 def version():
-    # [스테이지 6 시험용] 일부러 틀린 커밋을 돌려준다. CI 는 /version 을 검사하지 않아 통과하고, 배포 스모크 테스트가 막아야 한다
-    return {"commit": "broken-" + settings.commit[:7], "revision": settings.revision, "env": settings.env,
+    return {"commit": settings.commit, "revision": settings.revision, "env": settings.env,
             "llm": settings.provider, "model": settings.model, "storage": settings.storage, "auth": settings.auth,
             "banner": os.environ.get("BANNER", "")}
 
