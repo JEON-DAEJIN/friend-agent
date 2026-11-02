@@ -5,6 +5,7 @@
 - 기억 메모: 매 턴 끝에 기억할 사실을 뽑아 추가, 수정, 삭제한다. 사용자가 화면에서 보고 지울 수 있다.
 """
 import re
+from datetime import date, timedelta
 
 from app import when
 from app.logs import log
@@ -75,6 +76,46 @@ def rule_extract(message):
     return {"add": found, "update": [], "remove": []}
 
 
+DATE_WITH_WEEKDAY = re.compile(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일\s*\(?\s*([월화수목금토일])(?:요일)?\s*\)?")
+
+
+def weekday_mismatch(text, now):
+    """'11월 12일(토)'처럼 날짜와 요일이 함께 있는데 올해와 내년 어느 쪽에서도 맞지 않으면 True.
+    모델이 날짜를 지어내면 요일이 안 맞는 경우가 많다(N054 7장: 2026-11-12 는 목요일). 맞는 날짜를 만들어 주지는 못한다."""
+    found = DATE_WITH_WEEKDAY.findall(text)
+    for month, day, weekday in found:
+        ok = False
+        for year in (now.year, now.year + 1):
+            try:
+                ok = ok or when.WEEKDAYS[date(year, int(month), int(day)).weekday()] == weekday
+            except ValueError:
+                pass
+        if not ok:
+            return True
+    return False
+
+
+MONTH_DAY = re.compile(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+
+
+def fix_memory_date(text, user_message, now):
+    """사용자가 '내일', '다음 주 토요일'처럼 상대 표현으로 말했는데 기억 문장의 날짜가 그것과 다르면 맞는 날짜로 고친다.
+    날짜가 하나뿐이면 고치고(요일도 함께), 여럿이면 어느 것이 틀렸는지 알 수 없어 None(저장하지 않음)을 돌려준다.
+    사용자의 말에 상대 날짜 표현이 없거나 기억 문장에 날짜가 없으면 그대로 돌려준다.
+    (N054 7장: 앞서 저장된 틀린 약속 날짜(11/7)를 답이 되풀이하고 그것이 다시 기억으로 들어갔다. 요일은 맞아서 요일 검사로는 못 잡았다.)"""
+    offset = when.day_offset(user_message, now)
+    found = MONTH_DAY.findall(text)
+    if offset is None or not found:
+        return text
+    expected = (now + timedelta(days=offset)).date()
+    if any((int(m), int(d)) == (expected.month, expected.day) for m, d in found):
+        return text
+    if len(found) > 1:
+        return None
+    fixed = MONTH_DAY.sub(f"{expected.month}월 {expected.day}일", text, count=1)
+    return re.sub(r"\(([월화수목금토일])\)", f"({when.WEEKDAYS[expected.weekday()]})", fixed, count=1)
+
+
 def update_memories(store, uid, user_message, reply, now, llm):
     """방금 턴에서 기억할 것을 뽑아 저장한다. 바뀐 내용을 돌려준다(화면 표시용)."""
     existing = store.list_memories(uid)
@@ -97,10 +138,19 @@ def update_memories(store, uid, user_message, reply, now, llm):
         kind = item.get("kind") if item.get("kind") in KINDS else "fact"
         if not text or text in known_texts or is_sensitive(text):
             continue
+        before, text = text, fix_memory_date(text, user_message, now)
+        if text is None:
+            log("WARNING", "날짜가 사용자의 말과 달라 어느 쪽이 틀렸는지 알 수 없는 기억을 저장하지 않았습니다.")
+            continue
+        if text != before:
+            log("INFO", "기억의 날짜를 사용자가 말한 날짜 표현에 맞춰 고쳤습니다.")
+        if weekday_mismatch(text, now):
+            log("WARNING", "날짜와 요일이 안 맞는 기억을 저장하지 않았습니다.")
+            continue
         changes["added"].append(store.add_memory(uid, kind, text))
     for item in plan.get("update") or []:
         text = str(item.get("text") or "").strip()[:200]
-        if item.get("id") in known_ids and text and not is_sensitive(text):
+        if item.get("id") in known_ids and text and not is_sensitive(text) and not weekday_mismatch(text, now):
             store.update_memory(uid, item["id"], text)
             changes["updated"].append({"id": item["id"], "text": text})
     for memory_id in plan.get("remove") or []:
