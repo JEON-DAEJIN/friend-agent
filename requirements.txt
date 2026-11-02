@@ -8,3 +8,4 @@ python-multipart>=0.0.9
 pytesseract>=0.3.10
 pillow>=10.4
 pdf2image>=1.17
+langfuse==5.1.0

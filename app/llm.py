@@ -9,6 +9,13 @@ import re
 import time
 
 
+def fill_usage(usage, prompt_tokens, completion_tokens):
+    """관측을 위해 입력·출력 토큰 수를 usage 사전에 적어 준다. usage 가 없으면(관측을 안 쓰면) 아무것도 하지 않는다."""
+    if usage is not None:
+        usage["input"] = int(prompt_tokens or 0)
+        usage["output"] = int(completion_tokens or 0)
+
+
 class OpenAICompatibleLLM:
     can_reason = True  # 도구 선택, 기억 정리를 모델에게 맡길 수 있다
 
@@ -18,23 +25,32 @@ class OpenAICompatibleLLM:
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=60)
         self.model = model
 
-    def complete_json(self, system, user):
+    @staticmethod
+    def _read_usage(usage, response_usage):
+        if response_usage is not None:
+            fill_usage(usage, getattr(response_usage, "prompt_tokens", 0), getattr(response_usage, "completion_tokens", 0))
+
+    def complete_json(self, system, user, usage=None):
         """도구 선택처럼 정해진 형식의 답이 필요할 때. JSON 하나를 받아 dict로 돌려준다."""
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             response_format={"type": "json_object"},
         )
+        self._read_usage(usage, getattr(response, "usage", None))
         return json.loads(response.choices[0].message.content)
 
-    def complete_text(self, messages):
+    def complete_text(self, messages, usage=None):
         response = self.client.chat.completions.create(model=self.model, messages=messages)
+        self._read_usage(usage, getattr(response, "usage", None))
         return response.choices[0].message.content.strip()
 
-    def chat_stream(self, messages):
-        """답을 만들어지는 대로 조금씩 돌려준다(스트리밍)."""
-        response = self.client.chat.completions.create(model=self.model, messages=messages, stream=True)
+    def chat_stream(self, messages, usage=None):
+        """답을 만들어지는 대로 조금씩 돌려준다(스트리밍). usage 를 주면 토큰 수를 받아 적는다(마지막 조각에 실려 온다)."""
+        extra = {"stream_options": {"include_usage": True}} if usage is not None else {}
+        response = self.client.chat.completions.create(model=self.model, messages=messages, stream=True, **extra)
         for event in response:
+            self._read_usage(usage, getattr(event, "usage", None))
             if event.choices and event.choices[0].delta.content:
                 yield event.choices[0].delta.content
 
@@ -84,19 +100,28 @@ class ClaudeLLM:
             return self.REFUSAL_NOTICE
         return "".join(block.text for block in response.content if block.type == "text").strip()
 
-    def complete_json(self, system, user):
+    @staticmethod
+    def _read_usage(usage, message):
+        response_usage = getattr(message, "usage", None)
+        if response_usage is not None:
+            fill_usage(usage, getattr(response_usage, "input_tokens", 0), getattr(response_usage, "output_tokens", 0))
+
+    def complete_json(self, system, user, usage=None):
         """정해진 형식의 답이 필요할 때. 답에서 JSON 객체 하나를 찾아 dict로 돌려준다."""
         system = system + "\n\n반드시 JSON 객체 하나만 출력한다. 설명이나 코드 블록 표시는 붙이지 않는다."
         response = self.client.beta.messages.create(**self._request(system, [{"role": "user", "content": user}]))
+        self._read_usage(usage, response)
         if response.stop_reason == "refusal":
             raise ValueError("Claude가 요청을 거절했습니다.")
         return parse_json_object(self._text(response))
 
-    def complete_text(self, messages):
+    def complete_text(self, messages, usage=None):
         system, turns = self.to_claude(messages)
-        return self._text(self.client.beta.messages.create(**self._request(system, turns)))
+        response = self.client.beta.messages.create(**self._request(system, turns))
+        self._read_usage(usage, response)
+        return self._text(response)
 
-    def chat_stream(self, messages):
+    def chat_stream(self, messages, usage=None):
         """답을 만들어지는 대로 조금씩 돌려준다(스트리밍)."""
         system, turns = self.to_claude(messages)
         with self.client.beta.messages.stream(**self._request(system, turns)) as stream:
@@ -104,7 +129,9 @@ class ClaudeLLM:
             for text in stream.text_stream:
                 sent = True
                 yield text
-            if stream.get_final_message().stop_reason == "refusal" and not sent:
+            final = stream.get_final_message()
+            self._read_usage(usage, final)
+            if final.stop_reason == "refusal" and not sent:
                 yield self.REFUSAL_NOTICE
 
 
@@ -150,10 +177,12 @@ class FakeLLM:
             body = "그랬군요. 조금 더 이야기해 줄래요?" if polite else "그랬구나. 조금 더 얘기해 줄래?"
         return f"(가짜 응답) {body}"
 
-    def complete_text(self, messages):
+    def complete_text(self, messages, usage=None):
+        fill_usage(usage, 0, 0)  # 모델을 부르지 않았으니 토큰 0
         return self._reply(messages)
 
-    def chat_stream(self, messages):
+    def chat_stream(self, messages, usage=None):
+        fill_usage(usage, 0, 0)
         text = self._reply(messages)
         for i in range(0, len(text), 4):
             time.sleep(self.delay)
