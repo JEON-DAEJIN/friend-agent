@@ -149,6 +149,9 @@ class Handle:
         return self
 
     def end(self, **kwargs):
+        if getattr(self, "_ended", False):  # 같은 관찰 단위를 두 번 닫으면 SDK 가 경고한다
+            return None
+        self._ended = True
         return self._obs.end(**kwargs)
 
 
@@ -194,6 +197,22 @@ def child(parent, name, as_type="span", **fields):
 def update(obs, **fields):
     """관찰 단위에 값을 적는다(닫지는 않는다)."""
     _safe(obs.update, **fields)
+
+
+def close_trace(trace, **fields):
+    """트레이스를 닫고 기록을 보낸다. 한 번만 한다.
+
+    반드시 응답의 마지막 이벤트(done)를 **보내기 전에** 불러야 한다. 마지막 이벤트를 보내면 브라우저가 연결을 닫고 Cloud Run 은
+    그 요청을 끝난 것으로 보고 CPU 를 거의 안 주는데, 마지막 이벤트 뒤의 코드(제너레이터의 finally)는 그때 돌아서 전송이 멈춘다
+    (N054 7장: 마지막 이벤트 뒤에 flush 를 두었더니 5번 중 2번이 여전히 빠졌다. memory-update 를 done 앞에 두는 것과 같은 이유)."""
+    if getattr(trace, "closed", False):
+        return
+    finish(trace, **fields)
+    flush()
+    try:
+        trace.closed = True
+    except AttributeError:
+        pass
 
 
 def finish(obs, **fields):

@@ -58,8 +58,7 @@ def run_turn(message, uid, llm, store, show_panel):
         observe.finish(root, level="ERROR", status_message=type(error).__name__)
         raise
     finally:
-        observe.finish(root)
-        observe.flush()
+        observe.close_trace(root)  # 예외로 끝났을 때를 위한 것. 정상 종료는 done 을 보내기 전에 이미 닫았다
 
 
 def _run_turn(message, uid, llm, store, show_panel, root):
@@ -90,7 +89,7 @@ def _run_turn(message, uid, llm, store, show_panel, root):
         yield {"type": "delta", "text": CRISIS_REPLY}
         saved = store.add_message(uid, "assistant", CRISIS_REPLY, {"action": "safety", "guards": guards})
         log("WARNING", "위기 표현 안전 응답")
-        observe.update(root, output=CRISIS_REPLY, metadata={"action": "safety"})
+        observe.close_trace(root, output=CRISIS_REPLY, metadata={"action": "safety"})
         yield {"type": "done", "message_id": saved["id"]}
         return
 
@@ -168,8 +167,8 @@ def _run_turn(message, uid, llm, store, show_panel, root):
         step.update(metadata={"summarized": summarized})
     yield {"type": "memory", "added": [m["text"] for m in changes["added"]],
            "updated": [m["text"] for m in changes["updated"]], "removed": [m["text"] for m in changes["removed"]]}
-    observe.update(root, output=reply, metadata={"action": choice.action,
-                                                 "tools": ",".join(t["name"] for t in choice.tools) or "none"})
+    observe.close_trace(root, output=reply, metadata={"action": choice.action,
+                                                      "tools": ",".join(t["name"] for t in choice.tools) or "none"})
     yield {"type": "done", "message_id": saved["id"]}
 
 
