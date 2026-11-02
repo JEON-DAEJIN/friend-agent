@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app import agent, ocr, when
+from app import agent, observe, ocr, when
 from app.auth import Auth, User
 from app.config import ROOT, load_settings
 from app.llm import make_llm
@@ -66,6 +66,11 @@ class SettingsRequest(BaseModel):
 class ReportRequest(BaseModel):
     message_id: int
     reason: str = ""
+
+
+class FeedbackRequest(BaseModel):
+    message_id: int
+    value: str  # like, dislike
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -185,11 +190,30 @@ async def read_photo(photo: UploadFile, user: User = Depends(current_user)):
         raise HTTPException(500, str(error)) from error
 
 
+def own_answer(user, message_id):
+    """로그인한 사용자 자신의 캐릭터 답이 아니면 404. 남의 메시지에 점수를 매기면 평가 데이터가 오염된다."""
+    message = store.get_message(user.id, message_id)
+    if not message or message["role"] != "assistant":
+        raise HTTPException(404, "메시지를 찾을 수 없습니다")
+    return message
+
+
 @app.post("/api/report")
 def report(req: ReportRequest, user: User = Depends(current_user)):
-    # 지금은 로그로만 남긴다. 관측 도구를 붙이면 그 도구의 점수로 보낸다.
+    message = own_answer(user, req.message_id)
     log("WARNING", "부적절한 답변 신고", message_id=req.message_id, reason_length=len(req.reason))
-    return {"ok": True}
+    scored = observe.score(message["meta"].get("trace_id"), "report", 1, req.reason.strip()[:300] or None)
+    return {"ok": True, "scored": scored}
+
+
+@app.post("/api/feedback")
+def feedback(req: FeedbackRequest, user: User = Depends(current_user)):
+    """답에 대한 좋아요(user-feedback = true)와 별로예요(= false)를 그 답의 트레이스에 점수로 붙인다."""
+    if req.value not in ("like", "dislike"):
+        raise HTTPException(400, "value 는 like 또는 dislike 여야 합니다")
+    message = own_answer(user, req.message_id)
+    scored = observe.score(message["meta"].get("trace_id"), "user-feedback", 1 if req.value == "like" else 0)
+    return {"ok": True, "scored": scored}
 
 
 # ── 기억, 약속, 내 데이터 ───────────────────────────────────────────

@@ -80,8 +80,9 @@ body.has-banner .app{height:calc(100dvh - 32px)}
 .note.rem{background:var(--info-soft);color:var(--info)}
 .note.mem{background:var(--ok-soft);color:var(--ok)}
 .note.busy{color:var(--ink-3)}
-.report{font-size:12px;color:var(--ink-3);background:none;border:0;padding:2px 4px;opacity:0;transition:opacity .15s}
-.row.them:hover .report{opacity:1}
+.report,.fb{font-size:12px;color:var(--ink-3);background:none;border:0;padding:2px 4px;opacity:0;transition:opacity .15s}
+.row.them:hover .report,.row.them:hover .fb,.fb.chosen{opacity:1}
+.fb.chosen{color:var(--ink);font-weight:600}
 .day{align-self:center;font-size:12px;color:var(--ink-3);background:var(--surface-2);border:1px solid var(--line);padding:2px 10px;border-radius:999px}
 
 .composer{padding:10px 24px 18px}
@@ -388,15 +389,39 @@ function addRow(role, text, opts = {}) {
   const row = document.createElement("div");
   row.className = "row " + (role === "user" ? "me" : "them");
   if (role === "user") row.innerHTML = `<div class="bubble"></div>`;
-  else row.innerHTML = `<div class="ava">${character.avatar}</div><div class="bubble${opts.safety ? " safety" : ""}"></div>${opts.id ? `<button class="report" title="부적절한 답변 신고">신고</button>` : ""}`;
+  else row.innerHTML = `<div class="ava">${character.avatar}</div><div class="bubble${opts.safety ? " safety" : ""}"></div>${opts.id ? `<button class="fb" data-v="like" title="좋은 답이에요">좋아요</button><button class="fb" data-v="dislike" title="별로인 답이에요">별로예요</button><button class="report" title="부적절한 답변 신고">신고</button>` : ""}`;
   row.querySelector(".bubble").textContent = text;
-  if (opts.id) bindReport(row, opts.id);
+  if (opts.id) { bindFeedback(row, opts.id); bindReport(row, opts.id); }
   thread.appendChild(row);
   const under = document.createElement("div");
   under.className = "under";
   thread.appendChild(under);
   scroll();
   return {row, bubble: row.querySelector(".bubble"), under};
+}
+function bindFeedback(row, id) {
+  // 답이 스트리밍으로 나올 때는 메시지 ID 를 끝(done)에야 알아서 버튼이 아직 없다. 없으면 여기서 만든다(신고 버튼 앞에).
+  if (!row.querySelector(".fb")) {
+    for (const [v, label, title] of [["like", "좋아요", "좋은 답이에요"], ["dislike", "별로예요", "별로인 답이에요"]]) {
+      const b = document.createElement("button");
+      b.className = "fb"; b.dataset.v = v; b.textContent = label; b.title = title;
+      const report = row.querySelector(".report");
+      report ? row.insertBefore(b, report) : row.appendChild(b);
+    }
+  }
+  const buttons = row.querySelectorAll(".fb");
+  buttons.forEach((btn) => {
+    btn.onclick = async () => {
+      buttons.forEach((b) => b.disabled = true);
+      try {
+        await api("/api/feedback", {method: "POST", body: JSON.stringify({message_id: id, value: btn.dataset.v})});
+        btn.classList.add("chosen");
+        buttons.forEach((b) => { if (b !== btn) b.remove(); });
+      } catch (e) {
+        buttons.forEach((b) => b.disabled = false);
+      }
+    };
+  });
 }
 function bindReport(row, id) {
   let btn = row.querySelector(".report");
@@ -472,7 +497,7 @@ async function send(text) {
           panel?.memory(e);
           refreshCount();
         }
-        else if (e.type === "done") { finished = true; bubble.textContent = reply || bubble.textContent; bindReport(row, e.message_id); }
+        else if (e.type === "done") { finished = true; bubble.textContent = reply || bubble.textContent; bindFeedback(row, e.message_id); bindReport(row, e.message_id); }
         else if (e.type === "error") { finished = true; bubble.textContent = e.message; }
       }
     }
