@@ -33,6 +33,10 @@ class Obs:
 class Client:
     def __init__(self):
         self.roots = []
+        self.flushes = 0
+
+    def flush(self):
+        self.flushes += 1
 
     def start_observation(self, *, name, as_type="span", **fields):
         root = Obs(name, as_type, **fields)
@@ -249,3 +253,18 @@ def test_every_child_gets_the_attributes_including_tags_added_later(client, monk
     assert "tags" not in seen[0] and "tags" not in seen[1]
     assert seen[2]["tags"] == ["get_weather"]  # 태그는 알게 된 뒤에 만드는 것부터 붙는다
     assert seen[2]["session_id"] == seen[0]["session_id"]
+
+
+def test_buffer_is_flushed_once_when_a_turn_or_greeting_ends(client):
+    run("오늘 좀 지쳤어")
+    assert client.flushes == 1
+    agent.greet("u2", FakeLLM(delay=0), MemoryStore())
+    assert client.flushes == 2
+
+
+def test_flush_failure_does_not_break_the_turn(client):
+    def broken():
+        raise RuntimeError("전송 실패")
+
+    client.flush = broken
+    assert run("오늘 좀 지쳤어")[-1]["type"] == "done"
