@@ -170,6 +170,14 @@ def start_trace(name, input=None, user_id=None):
         return NOOP
 
 
+def flush():
+    """모아 둔 기록을 지금 보낸다. Cloud Run 은 응답을 마친 뒤 CPU 를 거의 안 줘서 백그라운드 전송이 멈추므로,
+    응답을 마칠 때 직접 보낸다(N054 7장: staging 에서 대화 5번 중 3번의 트레이스가 빠졌다). 대가는 응답 마무리가 조금 늦어지는 것이다."""
+    client = get_client()
+    if client is not None:
+        _safe(lambda: client.flush())
+
+
 def _safe(call, *args, **kwargs):
     try:
         return call(*args, **kwargs)

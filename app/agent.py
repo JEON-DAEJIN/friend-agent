@@ -59,6 +59,7 @@ def run_turn(message, uid, llm, store, show_panel):
         raise
     finally:
         observe.finish(root)
+        observe.flush()
 
 
 def _run_turn(message, uid, llm, store, show_panel, root):
@@ -205,6 +206,8 @@ def greet(uid, llm, store):
     except Exception as error:
         observe.finish(root, level="ERROR", status_message=type(error).__name__)
         raise
+    finally:
+        observe.flush()
     saved = store.add_message(uid, "assistant", text, {"action": "greeting", "reminders": [r["id"] for r in due]})
     log("INFO", "먼저 말 걸기", reminders=len(due))
     return {"id": saved["id"], "text": text, "reminders": [r["text"] for r in due]}
