@@ -268,3 +268,21 @@ def test_flush_failure_does_not_break_the_turn(client):
 
     client.flush = broken
     assert run("오늘 좀 지쳤어")[-1]["type"] == "done"
+
+
+def test_buffer_is_flushed_before_the_last_event_is_sent(client):
+    """Cloud Run 은 마지막 이벤트(done)를 보낸 뒤 CPU 를 거의 안 주므로 flush 는 done 앞에 있어야 한다."""
+    flushes_when_done = None
+    for event in agent.run_turn("오늘 좀 지쳤어", "u1", FakeLLM(delay=0), MemoryStore(), False):
+        if event["type"] == "done":
+            flushes_when_done = client.flushes
+    assert flushes_when_done == 1
+    assert client.flushes == 1  # 끝난 뒤 finally 가 다시 보내지 않는다
+
+
+def test_crisis_turn_also_flushes_before_done(client):
+    flushes_when_done = None
+    for event in agent.run_turn("요즘 너무 죽고 싶어", "u1", FakeLLM(delay=0), MemoryStore(), False):
+        if event["type"] == "done":
+            flushes_when_done = client.flushes
+    assert flushes_when_done == 1
