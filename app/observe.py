@@ -190,7 +190,9 @@ def score(trace_id, name, value, comment=None):
     client = get_client()
     if client is None or not trace_id:
         return False
-    fields = {"name": name, "value": float(value), "trace_id": trace_id, "data_type": "BOOLEAN"}
+    # 점수에도 환경을 붙여야 Scores 화면에서 local·staging·production 을 나눠 본다(안 붙이면 default 로 들어간다)
+    fields = {"name": name, "value": float(value), "trace_id": trace_id, "data_type": "BOOLEAN",
+              "environment": os.environ.get("ENV") or "local"}
     if comment:
         fields["comment"] = mask(data=str(comment))[:500]
     _safe(lambda: client.create_score(**fields))

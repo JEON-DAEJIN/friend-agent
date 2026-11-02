@@ -61,8 +61,8 @@ def test_like_and_dislike_become_a_boolean_user_feedback_score_on_that_trace(rec
     assert client.post("/api/feedback", json={"message_id": message_id, "value": "like"}).json() == {"ok": True, "scored": True}
     assert client.post("/api/feedback", json={"message_id": message_id, "value": "dislike"}).json()["scored"] is True
     assert recorder.scores == [
-        {"name": "user-feedback", "value": 1.0, "trace_id": "trace-abc", "data_type": "BOOLEAN"},
-        {"name": "user-feedback", "value": 0.0, "trace_id": "trace-abc", "data_type": "BOOLEAN"},
+        {"name": "user-feedback", "value": 1.0, "trace_id": "trace-abc", "data_type": "BOOLEAN", "environment": "test"},
+        {"name": "user-feedback", "value": 0.0, "trace_id": "trace-abc", "data_type": "BOOLEAN", "environment": "test"},
     ]
 
 
