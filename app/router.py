@@ -6,7 +6,7 @@ fake 모드처럼 모델을 쓰지 않을 때나 모델 응답을 읽지 못했�
 """
 import re
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from app import when
 from app.logs import log
@@ -24,6 +24,10 @@ KEYWORDS = {
 ASK_PATTERN = re.compile(r"(라고|으라고|하라고)\s*(꼭\s*)?(알려|말해)|잊지 않게|리마인드|깨워")
 CANCEL_WORDS = ["취소", "지워", "없던 걸로", "안 알려 줘도", "안 알려줘도"]
 LIST_PATTERN = re.compile(r"(약속|알림|리마인드).*(뭐|목록|있어|있지|있었|보여|확인)")
+# 약속 저장은 사용자가 알려 달라고 분명히 부탁했을 때만 한다. 모델이 지시문을 어기고 골라도 코드가 막는 기준이다.
+REMINDER_REQUEST = re.compile(r"알려|알림|리마인드|깨워|잊지|말해\s*줘|말해\s*주")
+# 약속 목록 조회는 묻는 말일 때만 한다. "나 다음주 토요일에 이사 가" 같은 평서문에 모델이 골라도 코드가 막는다.
+QUESTION_WORDS = re.compile(r"[?？]|뭐|무엇|언제|있어|있지|있었|알려|보여|확인|기억|했지|했더라|목록|몇")
 
 
 def router_prompt():
@@ -39,6 +43,9 @@ def router_prompt():
         "- 날씨나 미세먼지 이야기를 해도 예보를 묻는 게 아니라 경험이나 하소연이면 도구를 쓰지 않는다.",
         "- location 은 메시지에 도시 이름이 있으면 그 도시, 없으면 사용자 지역이다.",
         "- date 는 [달력]을 보고 정한 YYYY-MM-DD 날짜다. 날짜 표현이 없으면 오늘이다.",
+        "- '다음 공휴일', '언제 쉬어?'처럼 앞으로 가장 가까운 공휴일을 물으면 반드시 get_holidays 를 고르고 args 는 {} 로 둔다. "
+        '예: {"name": "get_holidays", "args": {}}. args 를 비우면 오늘부터 1년을 찾아 준다. 도구를 고르지 않고 tools 를 빈 배열로 두면 안 된다.',
+        "- get_holidays 의 from 과 to 는 사용자가 달이나 기간을 말했을 때만 쓴다. 한 달처럼 짧은 범위로 '다음' 공휴일을 찾지 않는다.",
         "- create_reminder 는 사용자가 나중에 알려 달라고 분명히 부탁할 때만 고른다. 일정이 있다는 이야기만 하면 고르지 않는다.",
         "- create_reminder 의 text 는 알려 줄 내용만 짧게 쓴다. 예: '우산 챙기기', '일찍 자기'.",
         "- create_reminder 의 due_at 은 [지금] 시각과 시간대를 기준으로 계산한다. 시각 없이 날짜만 있으면 09:00, 아침 08:00, 점심 12:00, 저녁 19:00, 밤 21:00 으로 한다.",
@@ -134,6 +141,24 @@ def model_choose(message, history, now, location, llm):
     return result
 
 
+def fix_reminder_date(message, args, now):
+    """모델이 정한 약속 날짜가 메시지의 날짜 표현('다음 주 토요일' 등)과 다르면 날짜만 코드 규칙의 날짜로 고친다(시각은 모델 것을 둔다).
+    고쳤으면 (고치기 전 날짜, 고친 날짜) 를, 아니면 None 을 돌려준다. N054 7장: 같은 부탁에 11/12·11/7·11/14 가 섞여 나왔다."""
+    rule_due = when.parse_when(message, now)
+    if not rule_due:
+        return None
+    try:
+        model_due = datetime.fromisoformat(str(args.get("due_at")))
+    except ValueError:
+        return None
+    model_day = (model_due.astimezone(rule_due.tzinfo) if model_due.tzinfo else model_due).date()
+    if model_day == rule_due.date():
+        return None
+    fixed = model_due.replace(year=rule_due.year, month=rule_due.month, day=rule_due.day)
+    args["due_at"] = fixed.isoformat()
+    return model_day, rule_due.date()
+
+
 def choose(message, history, now, location, llm):
     if getattr(llm, "can_reason", False):
         try:
@@ -144,6 +169,24 @@ def choose(message, history, now, location, llm):
             result.guards.append("모델 응답을 읽지 못해 키워드 규칙으로 골랐습니다.")
     else:
         result = rule_choose(message, now, location)
+
+    # 안전장치: 알려 달라는 부탁이 없는데 모델이 약속 저장을 골랐으면 뺀다("나 다음 주 토요일에 이사 가"는 일정 이야기일 뿐이다)
+    if result.decided_by == "model" and not REMINDER_REQUEST.search(message) \
+            and any(t["name"] == "create_reminder" for t in result.tools):
+        result.tools = [t for t in result.tools if t["name"] != "create_reminder"]
+        result.guards.append("알려 달라는 부탁이 없는데 모델이 약속 저장을 골라서 뺐습니다.")
+
+    # 안전장치: 묻는 말이 아닌데 모델이 약속 목록 조회를 골랐으면 뺀다(조회 결과가 답에 섞여 틀린 값을 되풀이하는 것을 막는다)
+    if result.decided_by == "model" and not QUESTION_WORDS.search(message) \
+            and any(t["name"] == "list_reminders" for t in result.tools):
+        result.tools = [t for t in result.tools if t["name"] != "list_reminders"]
+        result.guards.append("묻는 말이 아닌데 모델이 약속 목록 조회를 골라서 뺐습니다.")
+
+    # 안전장치: 부탁은 했는데 날짜가 메시지의 날짜 표현과 다르면 날짜를 규칙 계산으로 고친다
+    if result.decided_by == "model":
+        for tool in result.tools:
+            if tool["name"] == "create_reminder" and (changed := fix_reminder_date(message, tool["args"], now)):
+                result.guards.append(f"약속 날짜가 {changed[0]}로 잡혀 메시지의 날짜 표현({changed[1]})과 달라 고쳤습니다.")
 
     # 안전장치: 확신이 낮으면 도구를 쓰지 않고 되묻는다
     if result.confidence < CONFIDENCE_THRESHOLD:

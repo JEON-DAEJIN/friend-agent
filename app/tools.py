@@ -160,7 +160,7 @@ def get_holidays(args, ctx):
     data = {"from": start.isoformat(), "to": end.isoformat(),
             "holidays": [{"date": d.isoformat(), "name": n} for d, n in found]}
     if not found:
-        return ToolResult("get_holidays", True, f"{start}부터 {end}까지 공휴일이 없습니다.", data)
+        return ToolResult("get_holidays", True, f"{start}부터 {end}까지 공휴일이 없습니다(이 기간 밖은 조회하지 않았습니다).", data)
     listed = ", ".join(f"{when.date_label(d)} {n}" for d, n in found[:6])
     more = f" 외 {len(found) - 6}일" if len(found) > 6 else ""
     return ToolResult("get_holidays", True, f"{start}~{end} 공휴일: {listed}{more}.", data)
@@ -217,7 +217,7 @@ TOOLS = {
     },
     "get_holidays": {
         "run": get_holidays, "label": "공휴일",
-        "desc": "기간 안의 한국 공휴일. 연휴, 빨간 날 질문",
+        "desc": "기간 안의 한국 공휴일. 연휴, 빨간 날 질문. from, to 를 비우면 오늘부터 1년",
         "args": '{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}',
     },
     "create_reminder": {
