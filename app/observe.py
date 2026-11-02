@@ -178,6 +178,26 @@ def flush():
         _safe(lambda: client.flush())
 
 
+def trace_meta(trace):
+    """메시지 meta 에 넣을 트레이스 ID. 반응(좋아요·별로예요·신고)을 그 답의 트레이스에 점수로 붙이려고 저장한다. 계측이 꺼져 있으면 비어 있다."""
+    trace_id = getattr(trace, "trace_id", None)
+    return {"trace_id": trace_id} if trace_id else {}
+
+
+def score(trace_id, name, value, comment=None):
+    """트레이스에 BOOLEAN 점수를 붙이고 보낸다(1 = true, 0 = false). 키가 없거나 트레이스 ID 를 모르면 건너뛴다.
+    점수를 붙였으면 True. 코멘트(신고 사유 등 사용자가 쓴 글)는 보내기 전에 가린다."""
+    client = get_client()
+    if client is None or not trace_id:
+        return False
+    fields = {"name": name, "value": float(value), "trace_id": trace_id, "data_type": "BOOLEAN"}
+    if comment:
+        fields["comment"] = mask(data=str(comment))[:500]
+    _safe(lambda: client.create_score(**fields))
+    flush()
+    return True
+
+
 def _safe(call, *args, **kwargs):
     try:
         return call(*args, **kwargs)

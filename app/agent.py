@@ -88,7 +88,8 @@ def _run_turn(message, uid, llm, store, show_panel, root):
             yield {"type": "turn", "tools": [], "confidence": None, "reason": "", "decided_by": "rule",
                    "action": "safety", "guards": guards}
         yield {"type": "delta", "text": CRISIS_REPLY}
-        saved = store.add_message(uid, "assistant", CRISIS_REPLY, {"action": "safety", "guards": guards})
+        saved = store.add_message(uid, "assistant", CRISIS_REPLY, {"action": "safety", "guards": guards,
+                                                                    **observe.trace_meta(root)})
         log("WARNING", "위기 표현 안전 응답")
         observe.update(root, output=CRISIS_REPLY, metadata={"action": "safety"})
         yield {"type": "done", "message_id": saved["id"]}
@@ -142,7 +143,7 @@ def _run_turn(message, uid, llm, store, show_panel, root):
             reply += chunk
             yield {"type": "delta", "text": chunk}
     meta = {"tools": [t["name"] for t in choice.tools], "confidence": choice.confidence,
-            "action": choice.action, "guards": choice.guards}
+            "action": choice.action, "guards": choice.guards, **observe.trace_meta(root)}
     save = observe.child(root, "save-turn")  # 답 저장(저장소 쓰기)
     try:
         saved = store.add_message(uid, "assistant", reply, meta)
@@ -208,6 +209,7 @@ def greet(uid, llm, store):
         raise
     finally:
         observe.flush()
-    saved = store.add_message(uid, "assistant", text, {"action": "greeting", "reminders": [r["id"] for r in due]})
+    saved = store.add_message(uid, "assistant", text, {"action": "greeting", "reminders": [r["id"] for r in due],
+                                                       **observe.trace_meta(root)})
     log("INFO", "먼저 말 걸기", reminders=len(due))
     return {"id": saved["id"], "text": text, "reminders": [r["text"] for r in due]}
