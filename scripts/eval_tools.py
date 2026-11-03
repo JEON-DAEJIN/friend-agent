@@ -65,8 +65,15 @@ def args_match(expected, actual):
     return wrong
 
 
+def option(name):
+    """--label production 처럼 값을 받는 옵션. 없으면 None."""
+    return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else None
+
+
 def main():
     use_rule = "--rule" in sys.argv
+    label = option("--label")                                  # Langfuse 프롬프트 tool-router 의 라벨(production·staging 등)
+    version = int(option("--version")) if option("--version") else None   # 라벨이 없는 버전은 번호로 고른다. 번호가 우선
     llm = None if use_rule else make_llm(load_settings())
     if llm is not None and not llm.can_reason:
         print("LLM_PROVIDER=fake 에서는 모델 평가를 할 수 없습니다. --rule 로 실행하세요.")
@@ -75,11 +82,13 @@ def main():
     rows = [json.loads(line) for line in (ROOT / "data/eval/tool_selection.jsonl").read_text(encoding="utf-8").splitlines()]
     tool_ok = args_ok = 0
     failures = []
+    used = ""
     for row in rows:
         if use_rule:
             choice = rule_choose(row["message"], NOW, LOCATION)
         else:
-            choice = model_choose(row["message"], row["history"], NOW, LOCATION, llm)
+            choice = model_choose(row["message"], row["history"], NOW, LOCATION, llm, label=label, version=version)
+            used = choice.prompt
         picked = {t["name"] for t in choice.tools}
         required, optional = set(row["expected_tools"]), set(row["optional_tools"])
         tools_right = required <= picked <= required | optional
@@ -95,7 +104,8 @@ def main():
             failures.append((row, sorted(picked), wrong, choice.confidence))
 
     n = len(rows)
-    print(f"[{'키워드 규칙' if use_rule else '모델 ' + llm.model}] 도구 정답 {tool_ok}/{n}, 도구와 인자 모두 정답 {args_ok}/{n}")
+    print(f"[{'키워드 규칙' if use_rule else '모델 ' + llm.model}] 도구 정답 {tool_ok}/{n}, 도구와 인자 모두 정답 {args_ok}/{n}"
+          + (f"  (지시문: {used})" if used else ""))
     for row, picked, wrong, conf in failures:
         detail = "; ".join(wrong) if wrong else f"정답 {row['expected_tools'] or '도구 없음'}, 결과 {picked or '도구 없음'}"
         print(f"  {row['id']} {row['message']}  →  {detail}  (확신도 {conf:.2f})")

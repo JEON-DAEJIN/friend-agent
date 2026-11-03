@@ -98,10 +98,12 @@ def _run_turn(message, uid, llm, store, show_panel, root):
     with llm.step("choose-tools", always=True) as step:
         choice = choose(message, history, now, settings["location"], llm)
         root.tag(*(t["name"] for t in choice.tools))
-        step.update(output={"tools": choice.tools, "reason": choice.reason},
-                    metadata={"tools": ",".join(t["name"] for t in choice.tools) or "none",
-                              "confidence": round(choice.confidence, 2), "decided_by": choice.decided_by,
-                              "action": choice.action})
+        meta = {"tools": ",".join(t["name"] for t in choice.tools) or "none",
+                "confidence": round(choice.confidence, 2), "decided_by": choice.decided_by, "action": choice.action}
+        if choice.prompt:
+            meta["prompt"] = choice.prompt   # 어느 지시문(이름·버전·라벨)으로 골랐는지. 코드 지시문이면 code(...)
+        extra = {"prompt": choice.prompt_client} if choice.prompt_client else {}   # generation 에 프롬프트 버전을 연결한다
+        step.update(output={"tools": choice.tools, "reason": choice.reason}, metadata=meta, **extra)
     if show_panel:
         yield {"type": "turn", "tools": [{"name": t["name"], "label": TOOLS[t["name"]]["label"], "args": t["args"]}
                                          for t in choice.tools],

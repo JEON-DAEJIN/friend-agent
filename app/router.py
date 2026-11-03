@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from app import when
+from app import prompts, when
 from app.logs import log
 from app.tools import CITIES, TOOLS
 
@@ -30,12 +30,23 @@ REMINDER_REQUEST = re.compile(r"알려|알림|리마인드|깨워|잊지|말해\
 QUESTION_WORDS = re.compile(r"[?？]|뭐|무엇|언제|있어|있지|있었|알려|보여|확인|기억|했지|했더라|목록|몇")
 
 
+ROUTER_PROMPT_NAME = "tool-router"   # Langfuse 프롬프트 이름. 도구 목록 자리는 {{tools}} 변수다.
+
+
+def tools_block():
+    return "\n".join(f"- {name}: {t['desc']}. 인자 {t['args']}" for name, t in TOOLS.items())
+
+
 def router_prompt():
-    tools = "\n".join(f"- {name}: {t['desc']}. 인자 {t['args']}" for name, t in TOOLS.items())
+    """코드에 남겨 둔 지시문. Langfuse 에 닿지 못할 때의 fallback 이고, Langfuse 의 버전 3(production)과 같은 문장이다."""
+    return router_template().replace("{{tools}}", tools_block())
+
+
+def router_template():
     return "\n".join([
         "너는 AI 친구 서비스에서 사용자 메시지에 답하기 전에 필요한 도구를 고르는 선택기다.",
         "쓸 수 있는 도구:",
-        tools,
+        "{{tools}}",
         "",
         "규칙:",
         "- 도구가 필요 없는 일상 대화면 tools 를 빈 배열로 둔다. 대부분의 메시지는 여기에 해당한다.",
@@ -64,6 +75,8 @@ class ToolChoice:
     decided_by: str                      # model, rule
     action: str = "answer"               # answer, clarify
     guards: list = field(default_factory=list)
+    prompt: str = ""                     # 쓴 지시문의 출처. 예: "tool-router v3 (production)", "code(...)"
+    prompt_client: object = field(default=None, repr=False)   # Langfuse 프롬프트 클라이언트(generation 연결용)
 
 
 # ── 키워드 규칙 ─────────────────────────────────────────────────────
@@ -119,17 +132,21 @@ def rule_choose(message, now, location):
 
 # ── 모델 ────────────────────────────────────────────────────────────
 
-def model_choose(message, history, now, location, llm):
+def model_choose(message, history, now, location, llm, label=None, version=None):
+    """label·version 을 주면 Langfuse 의 그 지시문으로 고른다(평가·실험용). 안 주면 ENV 에 맞는 라벨을 쓴다."""
     recent = "\n".join(f"{m['role']}: {m['content']}" for m in history[-4:]) or "(없음)"
     user = (f"[지금] {now.isoformat()} ({when.WEEKDAYS[now.weekday()]}요일)\n[달력]\n{when.calendar_hint(now)}\n"
             f"[사용자 지역] {location}\n[최근 대화]\n{recent}\n\n[메시지]\n{message}")
-    data = llm.complete_json(router_prompt(), user)
+    fetched = prompts.fetch_text_prompt(ROUTER_PROMPT_NAME, router_template(), {"tools": tools_block()},
+                                        label=label, version=version)
+    data = llm.complete_json(fetched.text, user)
     tools = []
     for t in data.get("tools") or []:
         if isinstance(t, dict) and t.get("name") in TOOLS:
             tools.append({"name": t["name"], "args": t.get("args") if isinstance(t.get("args"), dict) else {}})
     confidence = max(0.0, min(1.0, float(data.get("confidence", 0))))
-    result = ToolChoice(tools[:MAX_TOOLS], confidence, str(data.get("reason", "")), "model")
+    result = ToolChoice(tools[:MAX_TOOLS], confidence, str(data.get("reason", "")), "model",
+                        prompt=fetched.ref, prompt_client=fetched.client)
 
     # 안전장치: 지난 연도로 적힌 날짜는 올해로 고친다
     for t in result.tools:
