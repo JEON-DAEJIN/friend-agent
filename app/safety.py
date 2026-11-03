@@ -1,7 +1,7 @@
 """모델 판단과 상관없이 코드 규칙으로 처리하는 안전장치."""
 import re
 
-CRISIS_KEYWORDS = ["죽고 싶", "죽고싶", "자살", "살기 싫", "살기싫", "사라지고 싶", "자해", "목숨을 끊", "극단적 선택"]
+CRISIS_KEYWORDS = ["죽고 싶", "죽고싶", "자살", "살기 싫", "살기싫", "사라지고 싶", "자해", "목숨을 끊", "극단적 선택", "그만 살고", "살고 싶지 않", "살고싶지 않", "살 이유가 없", "살 의미가 없"]
 
 CRISIS_REPLY = (
     "지금 많이 힘든 마음이 느껴져서 걱정돼요. 저는 AI라서 충분히 도와드릴 수 없지만, "
@@ -18,8 +18,16 @@ SENSITIVE_PATTERNS = [
 ]
 
 
+# "다 끝내고 싶어. 아무 의미가 없어"처럼 낱말 하나로는 일상 말투와 구별되지 않는 표현은 두 말이 한 메시지에 함께 있을 때만 본다.
+# "오늘 일 다 끝내고 싶다", "이 프로젝트 의미가 없는 것 같아"는 각각 하나만 있어 잡히지 않는다(N055 6장).
+ENDING_PATTERN = re.compile(r"끝내(?:버리)?고\s?싶")
+MEANINGLESS_PATTERN = re.compile(r"의미\s?(?:가\s?)?없")
+
+
 def is_crisis(text):
-    return any(k in text for k in CRISIS_KEYWORDS)
+    if any(k in text for k in CRISIS_KEYWORDS):
+        return True
+    return bool(ENDING_PATTERN.search(text) and MEANINGLESS_PATTERN.search(text))
 
 
 def is_sensitive(text):
