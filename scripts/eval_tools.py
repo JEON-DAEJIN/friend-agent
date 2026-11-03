@@ -8,7 +8,7 @@
 """
 import json
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,11 +22,29 @@ NOW = datetime.fromisoformat("2026-10-12T14:00:00+09:00")
 LOCATION = "서울"
 
 
+def _date(text):
+    try:
+        return date.fromisoformat(str(text)[:10]) if text else None
+    except ValueError:
+        return None
+
+
 def args_match(expected, actual):
     """정답에 적힌 인자만 비교한다. due_at 은 분 단위까지 같은 시각이면 맞다."""
     wrong = []
+    # 조회 기간이 날짜를 포함하는지만 본다. 인자를 비우면 도구가 오늘부터 1년을 찾으므로 그것도 정답이다(N055).
+    start = _date(actual.get("from")) or NOW.date()
+    end = _date(actual.get("to")) or NOW.date() + timedelta(days=365)
     for key, want in expected.items():
         got = actual.get(key)
+        if key == "next_holiday":
+            if not (start <= date.fromisoformat(want) <= end):
+                wrong.append(f"기간 {start}~{end} 에 다음 공휴일 {want} 이(가) 없음")
+            continue
+        if key == "covers":
+            if not (start <= date.fromisoformat(want[0]) and date.fromisoformat(want[1]) <= end):
+                wrong.append(f"기간 {start}~{end} 이(가) {want[0]}~{want[1]} 를 다 덮지 못함")
+            continue
         if key == "due_at":
             try:
                 same = datetime.fromisoformat(str(got)).replace(tzinfo=None, second=0) == datetime.fromisoformat(want)
