@@ -46,4 +46,4 @@ jobs:
             echo "시크릿 LLM_API_KEY 가 없어 평가할 수 없다. 저장소 Settings > Secrets and variables > Actions 에 등록한다"
             exit 1
           fi
-          python scripts/eval_tools.py --full --repeat 2 --min-exact 33 --must-pass T34 | tee -a "$GITHUB_STEP_SUMMARY"
+          python scripts/eval_tools.py --full --repeat 2 --min-exact 41 --must-pass T34 | tee -a "$GITHUB_STEP_SUMMARY"
