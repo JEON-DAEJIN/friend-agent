@@ -16,7 +16,7 @@ from app import ab, memory, observe, when
 from app.logs import log
 from app.persona import DEFAULT_CHARACTER, build_persona
 from app.router import choose
-from app.safety import CRISIS_REPLY, is_crisis
+from app.safety import CRISIS_REPLY, LEAK_NOTICE, LeakGuard, is_crisis
 from app.tools import TOOLS, Context, run_tool
 
 GREETING_GAP = timedelta(hours=6)  # 마지막 대화 뒤 이만큼 지나면 앱을 열 때 먼저 말을 건다
@@ -146,10 +146,28 @@ def _run_turn(message, uid, llm, store, show_panel, root):
                               "tools": ",".join(t["name"] for t in choice.tools) or "none",
                               "style_prompt": style.ref, **({"ab_variant": style.variant} if style.variant else {})},
                     **({"prompt": style.client} if style.client else {}))
-        for chunk in llm.chat_stream([{"role": "system", "content": system}, *history,
-                                      *tool_note([r.summary for r in results]), {"role": "user", "content": message}]):
-            reply += chunk
-            yield {"type": "delta", "text": chunk}
+        # 지시문 유출 가드레일: 답에 안전 규칙이 그대로 나오면 그 앞까지만 내보내고 거절 문장으로 바꾼다(app/safety.py LeakGuard)
+        guard = LeakGuard()
+        stream = llm.chat_stream([{"role": "system", "content": system}, *history,
+                                  *tool_note([r.summary for r in results]), {"role": "user", "content": message}])
+        try:
+            for chunk in stream:
+                out, leaked = guard.feed(chunk)
+                if out:
+                    reply += out
+                    yield {"type": "delta", "text": out}
+                if leaked:
+                    break
+        finally:
+            getattr(stream, "close", lambda: None)()
+        tail = LEAK_NOTICE if guard.leaked else guard.flush()
+        if tail:
+            reply += tail
+            yield {"type": "delta", "text": tail}
+        if guard.leaked:
+            choice.guards.append("답에 안전 규칙이 그대로 나와 그 앞까지만 내보내고 막았습니다.")
+            root.tag("guard-prompt-leak")
+            step.update(metadata={"guard": "prompt-leak"})
     meta = {"tools": [t["name"] for t in choice.tools], "confidence": choice.confidence,
             "action": choice.action, "guards": choice.guards, **observe.trace_meta(root)}
     save = observe.child(root, "save-turn")  # 답 저장(저장소 쓰기)
