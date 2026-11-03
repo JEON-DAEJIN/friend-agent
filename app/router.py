@@ -176,10 +176,10 @@ def fix_reminder_date(message, args, now):
     return model_day, rule_due.date()
 
 
-def choose(message, history, now, location, llm):
+def choose(message, history, now, location, llm, label=None, version=None):
     if getattr(llm, "can_reason", False):
         try:
-            result = model_choose(message, history, now, location, llm)
+            result = model_choose(message, history, now, location, llm, label=label, version=version)
         except Exception as error:  # 모델 응답이 형식에 맞지 않으면 규칙으로 대신한다
             log("WARNING", "모델 도구 선택 실패, 키워드 규칙으로 대신함", error=type(error).__name__)
             result = rule_choose(message, now, location)

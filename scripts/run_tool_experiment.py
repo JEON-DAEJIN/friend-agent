@@ -7,7 +7,9 @@
 실행:
   python scripts/run_tool_experiment.py --versions 1 2 3 --repeat 2 [--dump 파일.json]
   python scripts/run_tool_experiment.py --local 3 --versions 3        # Langfuse 에 기록하지 않고 앞 N개만
-실행 이름: router-v<버전>-<회차> (같은 이름이 이미 있으면 --force 없이는 건너뛴다)
+  --full            choose() 전체 경로(코드 안전장치 포함)로 평가한다. 없으면 model_choose 만(N055 4장 첫 실험)
+  --prefix 이름     실행 이름의 앞부분(기본 router). 예: --prefix router-full-before
+실행 이름: <prefix>-v<버전>-<회차> (같은 이름이 이미 있으면 --force 없이는 건너뛴다)
 """
 import json
 import sys
@@ -20,7 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import eval_tools  # noqa: E402
 from app.config import load_settings  # noqa: E402
 from app.llm import make_llm  # noqa: E402
-from app.router import model_choose  # noqa: E402
+from app.router import choose, model_choose  # noqa: E402
 
 DATASET = "tool-selection"
 EXPERIMENT = "tool-router-compare"
@@ -53,11 +55,12 @@ def judge(expected, choice):
     return tools_right, tools_right and not wrong, wrong
 
 
-def make_task(llm, version):
+def make_task(llm, version, full=False):
+    pick = choose if full else model_choose   # full: 서비스가 실제로 거치는 choose() 전체(코드 안전장치 포함)
     def task(*, item, **kwargs):
         data = item.input if hasattr(item, "input") else item["input"]
-        choice = model_choose(data["message"], data["history"], eval_tools.NOW, eval_tools.LOCATION, llm, version=version)
-        return {"tools": choice.tools, "confidence": choice.confidence, "prompt": choice.prompt}
+        choice = pick(data["message"], data["history"], eval_tools.NOW, eval_tools.LOCATION, llm, version=version)
+        return {"tools": choice.tools, "confidence": choice.confidence, "prompt": choice.prompt, "guards": choice.guards}
     return task
 
 
@@ -95,6 +98,8 @@ def main():
         local(int(option("--local")), versions)
         return
     repeat = int(option("--repeat", "2"))
+    full = "--full" in sys.argv
+    prefix = option("--prefix", "router")
     dump_path = option("--dump")
     llm = make_llm(load_settings())
     from langfuse import Langfuse
@@ -105,16 +110,16 @@ def main():
     dump = {}
     for version in versions:
         for run in range(1, repeat + 1):
-            run_name = f"router-v{version}-{run}"
-            result = dataset.run_experiment(name=EXPERIMENT, run_name=run_name,
+            run_name = f"{prefix}-v{version}-{run}"
+            result = dataset.run_experiment(name=EXPERIMENT + ("-full" if full else ""), run_name=run_name,
                                             description=f"tool-router 버전 {version}, {run}회차 (N055)",
-                                            task=make_task(llm, version), evaluators=evaluators(), max_concurrency=4,
+                                            task=make_task(llm, version, full), evaluators=evaluators(), max_concurrency=4,
                                             metadata={"prompt_version": str(version), "run": str(run)})
             rows = {}
             for r in result.item_results:
                 scores = {e.name: e.value for e in r.evaluations}
                 rows[r.item.metadata["id"]] = {"tools_right": scores.get("tools-right"), "exact": scores.get("tools-and-args-right"),
-                                               "output": r.output, "comments": [e.comment for e in r.evaluations if e.comment]}
+                                               "output": r.output, "guards": (r.output or {}).get("guards", []), "comments": [e.comment for e in r.evaluations if e.comment]}
             dump[run_name] = rows
             tools = sum(1 for v in rows.values() if v["tools_right"] == 1)
             exact = sum(1 for v in rows.values() if v["exact"] == 1)

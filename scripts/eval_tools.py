@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.config import load_settings  # noqa: E402
 from app.llm import make_llm  # noqa: E402
-from app.router import model_choose, rule_choose  # noqa: E402
+from app.router import choose, model_choose, rule_choose  # noqa: E402
 
 NOW = datetime.fromisoformat("2026-10-12T14:00:00+09:00")
 LOCATION = "서울"
@@ -72,6 +72,7 @@ def option(name):
 
 def main():
     use_rule = "--rule" in sys.argv
+    full = "--full" in sys.argv   # 서비스가 실제로 거치는 choose() 전체(코드 안전장치 포함)로 평가한다. 없으면 모델 선택만
     label = option("--label")                                  # Langfuse 프롬프트 tool-router 의 라벨(production·staging 등)
     version = int(option("--version")) if option("--version") else None   # 라벨이 없는 버전은 번호로 고른다. 번호가 우선
     llm = None if use_rule else make_llm(load_settings())
@@ -87,7 +88,8 @@ def main():
         if use_rule:
             choice = rule_choose(row["message"], NOW, LOCATION)
         else:
-            choice = model_choose(row["message"], row["history"], NOW, LOCATION, llm, label=label, version=version)
+            pick = choose if full else model_choose
+            choice = pick(row["message"], row["history"], NOW, LOCATION, llm, label=label, version=version)
             used = choice.prompt
         picked = {t["name"] for t in choice.tools}
         required, optional = set(row["expected_tools"]), set(row["optional_tools"])
@@ -105,7 +107,7 @@ def main():
 
     n = len(rows)
     print(f"[{'키워드 규칙' if use_rule else '모델 ' + llm.model}] 도구 정답 {tool_ok}/{n}, 도구와 인자 모두 정답 {args_ok}/{n}"
-          + (f"  (지시문: {used})" if used else ""))
+          + (f"  (지시문: {used})" if used else "") + ("  [choose() 전체 경로]" if full else ""))
     for row, picked, wrong, conf in failures:
         detail = "; ".join(wrong) if wrong else f"정답 {row['expected_tools'] or '도구 없음'}, 결과 {picked or '도구 없음'}"
         print(f"  {row['id']} {row['message']}  →  {detail}  (확신도 {conf:.2f})")
