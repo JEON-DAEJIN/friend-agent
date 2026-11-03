@@ -70,25 +70,18 @@ def option(name):
     return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else None
 
 
-def main():
-    use_rule = "--rule" in sys.argv
-    full = "--full" in sys.argv   # 서비스가 실제로 거치는 choose() 전체(코드 안전장치 포함)로 평가한다. 없으면 모델 선택만
-    label = option("--label")                                  # Langfuse 프롬프트 tool-router 의 라벨(production·staging 등)
-    version = int(option("--version")) if option("--version") else None   # 라벨이 없는 버전은 번호로 고른다. 번호가 우선
-    llm = None if use_rule else make_llm(load_settings())
-    if llm is not None and not llm.can_reason:
-        print("LLM_PROVIDER=fake 에서는 모델 평가를 할 수 없습니다. --rule 로 실행하세요.")
-        return
+def load_rows():
+    return [json.loads(line) for line in (ROOT / "data/eval/tool_selection.jsonl").read_text(encoding="utf-8").splitlines()]
 
-    rows = [json.loads(line) for line in (ROOT / "data/eval/tool_selection.jsonl").read_text(encoding="utf-8").splitlines()]
+
+def run_once(rows, pick, llm, label=None, version=None, use_rule=False):
+    """41개를 한 번 평가한다. {tool_ok, args_ok, n, passed(도구와 인자가 모두 맞은 항목 id), failures, used}."""
     tool_ok = args_ok = 0
-    failures = []
-    used = ""
+    passed, failures, used = set(), [], ""
     for row in rows:
         if use_rule:
             choice = rule_choose(row["message"], NOW, LOCATION)
         else:
-            pick = choose if full else model_choose
             choice = pick(row["message"], row["history"], NOW, LOCATION, llm, label=label, version=version)
             used = choice.prompt
         picked = {t["name"] for t in choice.tools}
@@ -102,15 +95,60 @@ def main():
                 wrong += args_match(expected, got.get(name, {}))
             if not wrong:
                 args_ok += 1
+                passed.add(row["id"])
         if not tools_right or wrong:
             failures.append((row, sorted(picked), wrong, choice.confidence))
+    return {"tool_ok": tool_ok, "args_ok": args_ok, "n": len(rows), "passed": passed, "failures": failures, "used": used}
 
-    n = len(rows)
-    print(f"[{'키워드 규칙' if use_rule else '모델 ' + llm.model}] 도구 정답 {tool_ok}/{n}, 도구와 인자 모두 정답 {args_ok}/{n}"
-          + (f"  (지시문: {used})" if used else "") + ("  [choose() 전체 경로]" if full else ""))
-    for row, picked, wrong, conf in failures:
-        detail = "; ".join(wrong) if wrong else f"정답 {row['expected_tools'] or '도구 없음'}, 결과 {picked or '도구 없음'}"
-        print(f"  {row['id']} {row['message']}  →  {detail}  (확신도 {conf:.2f})")
+
+def gate(runs, min_exact=None, must_pass=()):
+    """CI 평가 게이트의 판정(N055 6장). LLM 을 부르지 않는 순수 함수.
+    - min_exact: 모든 회차에서 '도구와 인자 모두 정답'이 이 값 이상이어야 한다(한 회차라도 못 미치면 실패)
+    - must_pass: 이 항목들은 모든 회차에서 정답이어야 한다
+    돌려주는 값: (통과 여부, 실패 이유 목록)."""
+    reasons = []
+    for number, run in enumerate(runs, 1):
+        if min_exact is not None and run["args_ok"] < min_exact:
+            reasons.append(f"{number}회차: 도구와 인자 모두 정답 {run['args_ok']}개가 기준 {min_exact}개보다 적다")
+        for item in must_pass:
+            if item not in run["passed"]:
+                reasons.append(f"{number}회차: 꼭 맞아야 하는 항목 {item} 이(가) 틀렸다")
+    return not reasons, reasons
+
+
+def main():
+    use_rule = "--rule" in sys.argv
+    full = "--full" in sys.argv   # 서비스가 실제로 거치는 choose() 전체(코드 안전장치 포함)로 평가한다. 없으면 모델 선택만
+    label = option("--label")                                  # Langfuse 프롬프트 tool-router 의 라벨(production·staging 등)
+    version = int(option("--version")) if option("--version") else None   # 라벨이 없는 버전은 번호로 고른다. 번호가 우선
+    repeat = int(option("--repeat") or 1)                      # 몇 번 돌릴지. 실행마다 한두 개씩 흔들리므로 게이트는 여러 번 돌린다
+    min_exact = int(option("--min-exact")) if option("--min-exact") else None   # 기준 미달이면 종료 코드 1(CI 게이트)
+    must_pass = [x for x in (option("--must-pass") or "").split(",") if x]       # 예: T34,T26
+    llm = None if use_rule else make_llm(load_settings())
+    if llm is not None and not llm.can_reason:
+        print("LLM_PROVIDER=fake 에서는 모델 평가를 할 수 없습니다. --rule 로 실행하세요.")
+        sys.exit(2 if min_exact is not None else 0)   # 게이트가 평가를 못 했으면 통과로 치지 않는다
+
+    rows = load_rows()
+    pick = choose if full else model_choose
+    runs = []
+    for number in range(1, repeat + 1):
+        result = run_once(rows, pick, llm, label, version, use_rule)
+        runs.append(result)
+        prefix = f"{number}회차 " if repeat > 1 else ""
+        print(f"{prefix}[{'키워드 규칙' if use_rule else '모델 ' + llm.model}] 도구 정답 {result['tool_ok']}/{result['n']}, "
+              f"도구와 인자 모두 정답 {result['args_ok']}/{result['n']}"
+              + (f"  (지시문: {result['used']})" if result["used"] else "") + ("  [choose() 전체 경로]" if full else ""))
+        for row, picked, wrong, conf in result["failures"]:
+            detail = "; ".join(wrong) if wrong else f"정답 {row['expected_tools'] or '도구 없음'}, 결과 {picked or '도구 없음'}"
+            print(f"  {row['id']} {row['message']}  →  {detail}  (확신도 {conf:.2f})")
+
+    if min_exact is not None or must_pass:
+        ok, reasons = gate(runs, min_exact, must_pass)
+        print(f"평가 게이트: {'통과' if ok else '실패'} (기준: 모두 정답 {min_exact}개 이상, 꼭 맞아야 하는 항목 {must_pass or '없음'}, {repeat}회)")
+        for reason in reasons:
+            print("  -", reason)
+        sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
