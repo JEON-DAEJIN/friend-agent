@@ -49,7 +49,7 @@ def test_dataset_sizes_and_item_ids_are_stable_and_unique():
         assert ids == [i[0] for i in up.build_items(name, file_name, builder)]   # 다시 만들어도 같다
         sizes[name] = len(items)
     assert sizes["tool-selection"] == 41 and sizes["memory-extraction"] == 15 and sizes["safety"] == 15
-    assert sizes["holiday-reply"] >= 10
+    assert sizes["holiday-reply"] >= 10 and sizes["holiday-reply-v2"] == sizes["holiday-reply"]
 
 
 def test_holiday_reply_has_failure_and_normal_cases_with_fixed_tool_results():
@@ -70,3 +70,12 @@ def test_answer_prompt_has_exactly_two_variables_and_the_fixed_time():
     assert user["content"] == "{{message}}"
     assert "[지금] 11월 2일(월) 14:00" in system["content"]
     assert "이름: 하루" in system["content"]
+
+
+def test_holiday_reply_v2_has_the_same_questions_and_only_two_changed_conditions():
+    old = {r["id"]: r for r in up.read_jsonl("holiday_reply.jsonl")}
+    new = {r["id"]: r for r in up.read_jsonl("holiday_reply_v2.jsonl")}
+    assert old.keys() == new.keys()
+    assert all(old[i]["message"] == new[i]["message"] and old[i]["kind"] == new[i]["kind"] for i in old)
+    assert {i for i in old if old[i]["pass_condition"] != new[i]["pass_condition"]} == {"HR01", "HR09"}
+    assert all("연휴" in new[i]["tool_result"] or "공휴일이 없습니다" in new[i]["tool_result"] for i in new)

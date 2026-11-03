@@ -53,6 +53,8 @@ DATASETS = [
     ("memory-extraction", "memory_extraction.jsonl", build_memory_extraction, "기억 정리 평가"),
     ("safety", "safety.jsonl", build_safety, "안전 평가"),
     ("holiday-reply", "holiday_reply.jsonl", build_holiday_reply, "공휴일 답 평가(도구 결과를 고정해 넣음)"),
+    ("holiday-reply-v2", "holiday_reply_v2.jsonl", build_holiday_reply,
+     "공휴일 답 평가 v2: 같은 질문, 도구 결과는 연휴 계산·다음 공휴일을 넣은 새 get_holidays 문장(HR01·HR09 통과 조건만 수정)"),
 ]
 
 

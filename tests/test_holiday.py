@@ -29,8 +29,23 @@ def test_empty_args_look_a_year_ahead_and_find_christmas(monkeypatch):
     assert result.ok and "크리스마스" in result.summary
 
 
-def test_no_holiday_result_says_the_range_was_the_only_thing_searched(monkeypatch):
+def test_no_holiday_result_says_the_range_has_none_and_gives_the_next_one_outside_it(monkeypatch):
     monkeypatch.setattr(tools, "holidays_of", lambda year: [(date(year, 12, 25), "크리스마스")])
+    result = tools.get_holidays({"from": "2026-11-02", "to": "2026-11-30"}, SimpleNamespace(timezone="Asia/Seoul"))
+    assert "공휴일이 없습니다" in result.summary and "조회 범위 밖에서 찾아 덧붙임" in result.summary
+    assert "12월 25일(금) 크리스마스" in result.summary      # N055: 지어낼 빈칸을 코드가 채운다
+
+
+def test_no_holiday_result_keeps_the_old_sentence_when_the_next_one_cannot_be_found(monkeypatch):
+    calls = []
+
+    def holidays_of(year):
+        calls.append(year)
+        if len(calls) > 1:        # 기간 안의 해는 읽고, 그 뒤 공휴일을 찾는 조회는 실패
+            raise RuntimeError("연결 안 됨")
+        return []
+
+    monkeypatch.setattr(tools, "holidays_of", holidays_of)
     result = tools.get_holidays({"from": "2026-11-02", "to": "2026-11-30"}, SimpleNamespace(timezone="Asia/Seoul"))
     assert "공휴일이 없습니다" in result.summary and "이 기간 밖은 조회하지 않았습니다" in result.summary
 

@@ -147,6 +147,57 @@ def holidays_of(year):
     return _holiday_cache[year]
 
 
+LONG_BREAK_DAYS = 3   # 공휴일과 주말이 이어져 이만큼 쉬면 '연휴'로 말한다
+
+
+def holiday_dates_near(start, end):
+    """조회 기간과 그 앞뒤 3일을 덮는 해의 공휴일 날짜 집합. 기간 밖의 해를 읽지 못하면 그 해 공휴일은 없는 것으로 본다(보수적)."""
+    dates = set()
+    for year in range((start - timedelta(days=3)).year, (end + timedelta(days=3)).year + 1):
+        try:
+            dates |= {d for d, _ in holidays_of(year)}
+        except Exception:
+            if start.year <= year <= end.year:   # 조회 기간 안의 해는 못 읽으면 도구 실패다
+                raise
+    return dates
+
+
+def long_breaks(days, holiday_dates):
+    """days 가운데 공휴일이 든, 공휴일과 토·일이 이어진 쉬는 날 구간 중 3일 이상인 것을 [(첫날, 끝날)]로 돌려준다."""
+    def off(d):
+        return d.weekday() >= 5 or d in holiday_dates
+
+    seen, blocks = set(), []
+    for day in sorted(days):
+        if day in seen:
+            continue
+        first = last = day
+        while off(first - timedelta(days=1)):
+            first -= timedelta(days=1)
+        while off(last + timedelta(days=1)):
+            last += timedelta(days=1)
+        seen.update(first + timedelta(days=i) for i in range((last - first).days + 1))
+        if (last - first).days + 1 >= LONG_BREAK_DAYS:
+            blocks.append((first, last))
+    return blocks
+
+
+def break_label(first, last):
+    return f"{when.date_label(first)}~{when.date_label(last)} {(last - first).days + 1}일"
+
+
+def next_holiday_after(end):
+    """조회 기간 밖에서 end 다음으로 가까운 공휴일 (날짜, 이름). 못 찾거나 못 읽으면 None."""
+    try:
+        for year in (end.year, end.year + 1):
+            later = sorted((d, n) for d, n in holidays_of(year) if d > end)
+            if later:
+                return later[0]
+    except Exception:
+        return None
+    return None
+
+
 def get_holidays(args, ctx):
     today = when.now_in(ctx.timezone).date()
     try:
@@ -160,10 +211,30 @@ def get_holidays(args, ctx):
     data = {"from": start.isoformat(), "to": end.isoformat(),
             "holidays": [{"date": d.isoformat(), "name": n} for d, n in found]}
     if not found:
-        return ToolResult("get_holidays", True, f"{start}부터 {end}까지 공휴일이 없습니다(이 기간 밖은 조회하지 않았습니다).", data)
+        later = next_holiday_after(end)
+        if later is None:
+            return ToolResult("get_holidays", True, f"{start}부터 {end}까지 공휴일이 없습니다(이 기간 밖은 조회하지 않았습니다).", data)
+        day, name = later
+        note = ""
+        blocks = long_breaks([day], holiday_dates_near(day, day))
+        if blocks:
+            note = f" 그 날은 {break_label(*blocks[0])} 연휴입니다(공휴일과 주말 기준)."
+        data["next_holiday_after"] = {"date": day.isoformat(), "name": name}
+        return ToolResult("get_holidays", True,
+                          f"{start}부터 {end}까지 공휴일이 없습니다. 이 기간 밖에서 가장 가까운 공휴일은 {when.date_label(day)} {name}입니다(조회 범위 밖에서 찾아 덧붙임).{note}", data)
     listed = ", ".join(f"{when.date_label(d)} {n}" for d, n in found[:6])
     more = f" 외 {len(found) - 6}일" if len(found) > 6 else ""
-    return ToolResult("get_holidays", True, f"{start}~{end} 공휴일: {listed}{more}.", data)
+    blocks = long_breaks([d for d, _ in found], holiday_dates_near(start, end))
+    data["long_breaks"] = [{"from": a.isoformat(), "to": b.isoformat(), "days": (b - a).days + 1} for a, b in blocks]
+    if blocks:
+        shown = ", ".join(break_label(a, b) for a, b in blocks[:6])
+        extra = f" 외 {len(blocks) - 6}건" if len(blocks) > 6 else ""
+        in_blocks = {a + timedelta(days=i) for a, b in blocks for i in range((b - a).days + 1)}
+        rest = " 나머지 공휴일은 주말과 이어져도 3일이 안 됩니다." if any(d not in in_blocks for d, _ in found) else ""
+        breaks = f" 3일 이상 연휴: {shown}{extra}(공휴일과 주말 기준).{rest}"
+    else:
+        breaks = " 3일 이상 이어지는 연휴는 없습니다(공휴일과 주말 기준)."
+    return ToolResult("get_holidays", True, f"{start}~{end} 공휴일: {listed}{more}.{breaks}", data)
 
 
 # ── 약속 도구 ──────────────────────────────────────────────────────
