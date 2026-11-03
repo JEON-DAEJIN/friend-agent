@@ -14,7 +14,7 @@ from app.logs import log
 FETCH_TIMEOUT_SECONDS = 3   # Langfuse 에 닿지 못할 때 메시지 하나가 기다리는 시간의 상한(SDK 기본값은 5초)
 FETCH_RETRIES = 0
 COOLDOWN_SECONDS = 60       # 닿지 못했으면 이 시간 동안은 묻지 않고 곧장 코드의 지시문으로 답한다(메시지마다 기다리지 않게)
-_down_until = 0.0
+_down_until = {}              # 프롬프트 이름 → 이 시각(time.monotonic)까지는 묻지 않는다
 
 
 @dataclass
@@ -36,24 +36,27 @@ def render(template, **variables):
 
 def fetch_text_prompt(name, fallback, variables, label=None, version=None):
     """name 프롬프트(text)를 version 이 있으면 그 번호로, 없으면 label(기본은 ENV 에 맞는 라벨)로 가져와 variables 를 채운다."""
-    global _down_until
     client = observe.get_client()
     if client is None:
         return Fetched(render(fallback, **variables), "code(Langfuse 꺼짐)")
-    if time.monotonic() < _down_until:
+    if time.monotonic() < _down_until.get(name, 0.0):
         return Fetched(render(fallback, **variables), "code(Langfuse 에 닿지 못해 잠시 쉬는 중)")
     chosen = f"v{version}" if version else (label or default_label())
     try:
         selector = {"version": version} if version else {"label": label or default_label()}
-        prompt = client.get_prompt(name, type="text", fallback=fallback, max_retries=FETCH_RETRIES,
+        # SDK 의 fallback= 을 쓰지 않는다. 쓰면 '없는 라벨'과 'Langfuse 에 닿지 못함'이 둘 다 fallback 으로 돌아와 구분이 안 된다.
+        prompt = client.get_prompt(name, type="text", max_retries=FETCH_RETRIES,
                                    fetch_timeout_seconds=FETCH_TIMEOUT_SECONDS, **selector)
         text = prompt.compile(**variables)
     except Exception as error:
-        _down_until = time.monotonic() + COOLDOWN_SECONDS
+        if type(error).__name__ == "NotFoundError":   # 그 이름·라벨의 프롬프트가 없다. Langfuse 는 살아 있으니 쉬지 않는다(다른 라벨을 시도할 수 있다)
+            log("WARNING", "그 프롬프트(라벨·버전)가 없어 코드의 지시문으로 답합니다.", prompt=name, requested=chosen)
+            return Fetched(render(fallback, **variables), f"code(없음: {name} {chosen})")
+        _down_until[name] = time.monotonic() + COOLDOWN_SECONDS
         log("WARNING", "프롬프트를 가져오지 못해 코드의 지시문으로 답합니다.", prompt=name, error=type(error).__name__)
         return Fetched(render(fallback, **variables), f"code(가져오기 실패: {type(error).__name__})")
     if getattr(prompt, "is_fallback", False):
-        _down_until = time.monotonic() + COOLDOWN_SECONDS
+        _down_until[name] = time.monotonic() + COOLDOWN_SECONDS
         log("WARNING", "Langfuse 에 닿지 못해 코드의 지시문으로 답합니다.", prompt=name)
         return Fetched(text, f"code(Langfuse 에 닿지 못함, 요청 {chosen})")
     return Fetched(text, f"{name} v{prompt.version} ({chosen})", prompt)

@@ -12,7 +12,7 @@
 """
 from datetime import timedelta
 
-from app import memory, observe, when
+from app import ab, memory, observe, when
 from app.logs import log
 from app.persona import DEFAULT_CHARACTER, build_persona
 from app.router import choose
@@ -35,8 +35,8 @@ def tool_note(tool_lines):
     return [{"role": "system", "content": f"[방금 조회한 도구 결과 — 앞선 대화에서 내가 한 말과 달라도 이 결과를 따른다]\n{lines}"}]
 
 
-def system_prompt(character, now, location, memories, summary, tool_lines=(), clarify=False):
-    parts = [build_persona(character),
+def system_prompt(character, now, location, memories, summary, tool_lines=(), clarify=False, style=None):
+    parts = [build_persona(character, style),
              f"[지금] {when.label(now)} ({now.tzinfo}), 사용자 지역: {location}\n[달력]\n{when.calendar_hint(now)}"]
     block = memory.memory_block(memories, summary)
     if block:
@@ -51,6 +51,10 @@ def system_prompt(character, now, location, memories, summary, tool_lines=(), cl
 def run_turn(message, uid, llm, store, show_panel):
     """한 턴을 처리하면서 chat-turn 트레이스 하나에 단계별 관찰 단위를 남긴다(app/observe.py)."""
     root = observe.start_trace("chat-turn", input=message, user_id=uid)
+    variant = ab.variant_for(uid)   # A/B 가 켜졌을 때만 'a'·'b'. 이 트레이스의 관찰 단위마다 ab_variant 가 붙는다
+    if variant:
+        observe.set_trace_meta(root, ab_variant=variant)
+        root.tag(f"ab-{variant}")
     traced = observe.TracedLLM(llm, root)
     try:
         yield from _run_turn(message, uid, traced, store, show_panel, root)
@@ -130,15 +134,18 @@ def _run_turn(message, uid, llm, store, show_panel, root):
             yield {"type": "reminder", "action": r.name, "summary": r.summary}
 
     # ④ 답 생성 — 첫 글자가 나온 시각까지 남긴다(TracedLLM 이 completion_start_time 으로 기록)
+    style = ab.pick_style(uid)   # 답의 길이 규칙: A/B 그룹(또는 ENV 라벨)에 맞는 answer-style 버전, 못 가져오면 코드의 문장
     system = system_prompt(character, now, settings["location"], memories, summary,
-                           [r.summary for r in results], clarify=choice.action == "clarify")
+                           [r.summary for r in results], clarify=choice.action == "clarify", style=style.text)
     if show_panel:
         yield {"type": "context", "memories": [m["text"] for m in memories],
                "summary": summary["text"] if summary else None, "recent_messages": len(history)}
     reply = ""
     with llm.step("reply", always=True) as step:
         step.update(metadata={"memories": len(memories), "recent_messages": len(history),
-                              "tools": ",".join(t["name"] for t in choice.tools) or "none"})
+                              "tools": ",".join(t["name"] for t in choice.tools) or "none",
+                              "style_prompt": style.ref, **({"ab_variant": style.variant} if style.variant else {})},
+                    **({"prompt": style.client} if style.client else {}))
         for chunk in llm.chat_stream([{"role": "system", "content": system}, *history,
                                       *tool_note([r.summary for r in results]), {"role": "user", "content": message}]):
             reply += chunk
@@ -171,7 +178,8 @@ def _run_turn(message, uid, llm, store, show_panel, root):
     yield {"type": "memory", "added": [m["text"] for m in changes["added"]],
            "updated": [m["text"] for m in changes["updated"]], "removed": [m["text"] for m in changes["removed"]]}
     observe.close_trace(root, output=reply, metadata={"action": choice.action,
-                                                      "tools": ",".join(t["name"] for t in choice.tools) or "none"})
+                                                      "tools": ",".join(t["name"] for t in choice.tools) or "none",
+                                                      **({"ab_variant": style.variant} if style.variant else {})})
     yield {"type": "done", "message_id": saved["id"]}
 
 

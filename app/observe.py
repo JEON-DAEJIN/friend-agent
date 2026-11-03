@@ -181,6 +181,14 @@ def flush():
         _safe(lambda: client.flush())
 
 
+def set_trace_meta(trace, **meta):
+    """이 트레이스에서 앞으로 만들 관찰 단위(와 트레이스)에 metadata 를 붙인다. 속성을 같이 쓰는 Handle 에서만 동작한다.
+    N055 5장: 어느 A/B 그룹이었는지(ab_variant)를 남기는 데 쓴다."""
+    attrs = getattr(trace, "attrs", None)
+    if attrs is not None:
+        attrs["metadata"] = {**(attrs.get("metadata") or {}), **{k: str(v) for k, v in meta.items()}}
+
+
 def trace_meta(trace):
     """메시지 meta 에 넣을 트레이스 ID. 반응(좋아요·별로예요·신고)을 그 답의 트레이스에 점수로 붙이려고 저장한다. 계측이 꺼져 있으면 비어 있다."""
     trace_id = getattr(trace, "trace_id", None)
