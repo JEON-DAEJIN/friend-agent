@@ -4,7 +4,8 @@
 - /health, /version: 서비스 상태와 배포 버전
 - /api/config: 화면이 쓰는 설정(로그인 방식, 개발용 패널 표시 여부)
 - /api/character, /api/settings: 캐릭터와 사용자 설정
-- /api/chat: 메시지 한 턴. 결과를 이벤트(JSON 한 줄씩)로 스트리밍한다
+- /api/chat: 메시지 한 턴. 결과를 이벤트(JSON 한 줄씩)로 스트리밍한다. 보내기 전에 크레딧 1개를 서버에서 뺀다
+- /api/credits: 남은 크레딧과 최근 원장 기록
 - /api/greeting: 앱을 열 때 먼저 말 걸기
 - /api/ocr: 사진 속 글자 읽기(OCR_ENABLED=true 일 때)
 - /api/memories, /api/reminders, /api/data: 기억, 약속, 내 데이터 관리
@@ -13,6 +14,7 @@ import html
 import json
 import os
 import time
+import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -24,6 +26,7 @@ from app.config import ROOT, load_settings
 from app.llm import make_llm
 from app.logs import log
 from app.persona import DEFAULT_CHARACTER, OPTIONS, build_persona, clean_character
+from app.safety import is_crisis
 from app.store.base import make_store
 from app.tools import CITIES
 
@@ -56,6 +59,17 @@ def get_llm():
 
 class ChatRequest(BaseModel):
     message: str
+
+
+# 크레딧(N056). 차감 단위는 메시지 1개 = 크레딧 1개. 차감과 거절은 서버에서만 한다(화면은 보여 주기만).
+CREDITS_PER_MESSAGE = 1
+NO_CREDITS_MESSAGE = "크레딧을 다 썼어요. 충전하면 바로 이어서 이야기할 수 있어요."
+
+
+def grant_signup_credits(uid):
+    """처음 온 사용자에게 무료 크레딧을 한 번 쌓는다. 참조 signup:사용자ID 가 유일해서 몇 번 불러도 한 번만 쌓인다."""
+    if settings.free_credits > 0 and store.add_credit(uid, settings.free_credits, "signup", f"signup:{uid}"):
+        log("INFO", "가입 무료 크레딧 지급", amount=settings.free_credits)
 
 
 class SettingsRequest(BaseModel):
@@ -107,8 +121,20 @@ def config():
 
 @app.get("/api/me")
 def me(user: User = Depends(current_user)):
+    grant_signup_credits(user.id)
     return {"id": user.id, "anonymous": user.anonymous, "email": user.email,
-            "has_character": store.get_character(user.id) is not None}
+            "has_character": store.get_character(user.id) is not None,
+            "credits": store.credit_balance(user.id)}
+
+
+@app.get("/api/credits")
+def credits(user: User = Depends(current_user)):
+    """남은 크레딧(원장 합계)과 최근 기록 10줄. 화면은 이 값을 그대로 보여 주고 따로 계산하지 않는다."""
+    grant_signup_credits(user.id)
+    history = [{"delta": e["delta"], "reason": e["reason"], "created_at": e["created_at"].isoformat()}
+               for e in store.credit_history(user.id, 10)]
+    return {"balance": store.credit_balance(user.id), "history": history,
+            "per_message": CREDITS_PER_MESSAGE, "free_on_signup": settings.free_credits}
 
 
 # ── 캐릭터와 설정 ──────────────────────────────────────────────────
@@ -164,13 +190,31 @@ def chat(req: ChatRequest, user: User = Depends(current_user), model=Depends(get
     if not message:
         raise HTTPException(400, "메시지가 비어 있습니다")
 
+    # 답을 흘려 보내기 시작하면 상태 코드를 바꿀 수 없으므로, 보내기 전에 잔액 확인과 차감을 한 번에 한다.
+    # 위기 표현에는 크레딧과 상관없이 정해진 안전 응답이 나가야 하므로 받지도 거절하지도 않는다.
+    ref = None
+    if not is_crisis(message):
+        ref = f"chat:{uuid.uuid4().hex}"
+        ok, balance = store.spend_credit(user.id, CREDITS_PER_MESSAGE, "chat", ref, settings.free_credits)
+        if not ok:
+            log("INFO", "크레딧 부족으로 거절", balance=balance)
+            return JSONResponse({"error": "insufficient_credits", "message": NO_CREDITS_MESSAGE, "balance": balance},
+                                status_code=402)
+
     def events():
+        failed = False
         try:
             for event in agent.run_turn(message, user.id, model, store, settings.show_turn_panel):
+                failed = failed or event.get("type") == "error"
                 yield json.dumps(event, ensure_ascii=False, default=str) + "\n"
         except Exception as error:
+            failed = True
             log("ERROR", "대화 처리 실패", error=type(error).__name__)
             yield json.dumps({"type": "error", "message": "답을 만들지 못했어요. 잠시 뒤 다시 보내 주세요."}, ensure_ascii=False) + "\n"
+        if failed and ref:
+            # 답을 만들지 못했으면 뺀 크레딧을 되돌리는 줄로 돌려준다(원장은 지우지 않는다)
+            store.add_credit(user.id, CREDITS_PER_MESSAGE, "refund", f"refund:{ref}")
+            log("INFO", "답 실패로 크레딧 되돌림", amount=CREDITS_PER_MESSAGE)
 
     return StreamingResponse(events(), media_type="application/x-ndjson")
 

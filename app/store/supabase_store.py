@@ -137,6 +137,34 @@ class SupabaseStore:
                             user_id=f"eq.{uid}", status="eq.pending", due_at=f"lte.{iso(now)}")
         return [self._reminder(r) for r in rows]
 
+    # 크레딧 원장(0002_credits.sql). 잔액 계산과 차감은 데이터베이스 함수(RPC)로 한다.
+    def _rpc(self, name, args):
+        r = self.http.post(f"/rpc/{name}", json=args)
+        r.raise_for_status()
+        return r.json()
+
+    def credit_balance(self, uid):
+        return int(self._rpc("credit_balance", {"p_user": uid}))
+
+    def credit_history(self, uid, limit):
+        rows = self._get("credit_ledger", user_id=f"eq.{uid}", select="id,delta,reason,ref,created_at",
+                         order="id.desc", limit=limit)
+        return [{**r, "created_at": parse_time(r["created_at"])} for r in rows]
+
+    def add_credit(self, uid, delta, reason, ref):
+        """같은 ref 가 이미 있으면 쌓지 않고 False. ref 의 유일 제약을 on_conflict 로 조용히 건너뛴다."""
+        r = self.http.post("/credit_ledger", params={"on_conflict": "ref"},
+                           json={"user_id": uid, "delta": delta, "reason": reason, "ref": ref},
+                           headers={"Prefer": "return=representation,resolution=ignore-duplicates"})
+        r.raise_for_status()
+        return bool(r.json())
+
+    def spend_credit(self, uid, amount, reason, ref, free):
+        row = self._rpc("spend_credit", {"p_user": uid, "p_amount": amount, "p_reason": reason, "p_ref": ref,
+                                         "p_free": free})[0]
+        return bool(row["ok"]), int(row["balance"])
+
     def delete_all(self, uid):
+        # credit_ledger 는 지우지 않는다(0002_credits.sql 머리말의 이유)
         for table in ("messages", "summaries", "memories", "reminders", "characters", "user_settings"):
             self._delete(table, user_id=f"eq.{uid}")

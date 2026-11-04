@@ -38,6 +38,7 @@ class Settings:
     google_login: bool
     show_turn_panel: bool
     ocr_enabled: bool
+    free_credits: int         # 가입 때 원장에 한 번 쌓는 무료 크레딧(N056)
 
 
 def load_dotenv(path):
@@ -111,6 +112,8 @@ def load_settings():
         # 개발용 "이번 턴" 패널. production 에서는 기본으로 끈다.
         show_turn_panel=env_flag("SHOW_TURN_PANEL", env != "production"),
         ocr_enabled=env_flag("OCR_ENABLED", False),  # 사진 글자 읽기. tesseract 프로그램이 필요하다
+        # 가입 무료 크레딧. 보통 사용자(하루 20개)의 하루 반 분량. 근거는 N056 실습 진행기록 4절
+        free_credits=int(os.environ.get("FREE_CREDITS", "30") or 30),
     )
     log("INFO", "앱을 시작합니다.", provider=settings.provider, model=settings.model, env=settings.env,
         storage=settings.storage, auth=settings.auth, turn_panel=settings.show_turn_panel)
