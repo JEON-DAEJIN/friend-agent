@@ -162,8 +162,9 @@ class FakeLLM:
         name = re.search(r"이름: (.+)", system)
         name = name.group(1).strip() if name else "친구"
         tool_lines = []
-        if "[도구 결과]" in system:
-            block = system.split("[도구 결과]", 1)[1].split("\n\n", 1)[0]
+        # 도구 결과 구역은 "\n\n[도구 결과]\n- ..."로 시작한다. 안전 규칙 줄 "- [도구 결과]가 '없습니다'…"에 걸리지 않게 줄 맨 앞의 머리말만 본다(N055)
+        if "\n\n[도구 결과]\n" in system:
+            block = "- " + system.split("\n\n[도구 결과]\n", 1)[1].split("\n\n", 1)[0].removeprefix("- ")
             tool_lines = [line[2:] for line in block.splitlines() if line.startswith("- ")]
         user = messages[-1]["content"] if messages[-1]["role"] == "user" else ""
 

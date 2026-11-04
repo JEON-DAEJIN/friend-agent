@@ -10,6 +10,9 @@ from zoneinfo import ZoneInfo
 WEEKDAYS = "월화수목금토일"
 DAY_WORDS = {"오늘": 0, "내일": 1, "모레": 2, "글피": 3}
 PARTS = {"새벽": 5, "아침": 8, "오전": 9, "점심": 12, "오후": 15, "저녁": 19, "밤": 21}
+# '시험 전날', '출발 이틀 전'처럼 어떤 날을 기준으로 앞날을 말하는 표현. 몇 번째 앞날인지로 바꾼다.
+BEFORE_WORDS = {"전날": 1, "하루 전": 1, "이틀 전": 2, "사흘 전": 3}
+BEFORE_PATTERN = re.compile(r"(\d+)\s*일\s*전")
 
 
 def now_in(tz):
@@ -50,14 +53,29 @@ def day_offset(text, now):
     return None
 
 
+def days_before(text):
+    """'시험 전날'은 1, '이틀 전'은 2, '3일 전'은 3. 이런 표현이 없으면 0."""
+    for word, n in BEFORE_WORDS.items():
+        if word in re.sub(r"\s+", " ", text):
+            return n
+    m = BEFORE_PATTERN.search(text)
+    return int(m.group(1)) if m else 0
+
+
 def parse_when(text, now):
-    """'내일 아침', '목요일 저녁 7시', '30분 뒤' 같은 표현을 시각으로 바꾼다. 못 읽으면 None."""
+    """'내일 아침', '목요일 저녁 7시', '30분 뒤', '금요일 시험 전날 밤' 같은 표현을 시각으로 바꾼다. 못 읽으면 None.
+    '전날·이틀 전'은 기준이 되는 날(내일·요일 등)이 있을 때만 읽는다. 기준을 모르면 날짜를 정할 수 없으므로 읽지 않는다(N055)."""
     m = re.search(r"(\d+)\s*(분|시간)\s*(뒤|후|있다가)", text)
     if m:
         n = int(m.group(1))
         return (now + (timedelta(minutes=n) if m.group(2) == "분" else timedelta(hours=n))).replace(second=0, microsecond=0)
 
     offset = day_offset(text, now)
+    back = days_before(text)
+    if back:
+        if offset is None or offset - back < 0:   # 기준 날짜가 없거나, 빼면 이미 지난 날이다
+            return None
+        offset -= back
     part = next((p for p in PARTS if p in text), None)
     hm = re.search(r"(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분|\s*(반))?", text)
     if offset is None and part is None and hm is None:

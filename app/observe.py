@@ -27,8 +27,13 @@ from app.logs import log
 
 MASK_PATTERNS = [
     (re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), "[이메일]"),
+    (re.compile(r"(?<!\d)\d{6}\s?-\s?[1-4]\d{6}(?!\d)"), "[주민번호]"),     # 카드 모양(숫자 13자리)보다 먼저 가려야 제 이름이 붙는다
     (re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)"), "[카드번호]"),
     (re.compile(r"(?<!\d)0\d{1,2}[-. ]?\d{3,4}[-. ]?\d{4}(?!\d)"), "[전화번호]"),
+    # 계좌번호(예: 110-123-456789). 날짜(2026-11-03)가 가려지지 않게 마지막 묶음이 4자리 이상일 때만 본다. 전화번호를 먼저 가린 뒤에 본다
+    (re.compile(r"(?<!\d)\d{3,6}-\d{2,6}-\d{4,8}(?!\d)"), "[계좌번호]"),
+    # '비밀번호는 abc1234야'처럼 말 바로 뒤의 값. 말은 남기고 값만 가린다. 값에 숫자나 영문자가 있어야 한다('비밀번호 잊어버렸어'는 그대로)
+    (re.compile(r"(비밀번호|패스워드|passwd|password)(\s*(?:은|는|이|가|:|=)?\s*)(?=[^\s,]*[A-Za-z0-9])[^\s,]{2,}", re.I), r"\1\2[비밀번호]"),
 ]
 
 
@@ -179,6 +184,14 @@ def flush():
     client = get_client()
     if client is not None:
         _safe(lambda: client.flush())
+
+
+def set_trace_meta(trace, **meta):
+    """이 트레이스에서 앞으로 만들 관찰 단위(와 트레이스)에 metadata 를 붙인다. 속성을 같이 쓰는 Handle 에서만 동작한다.
+    N055 5장: 어느 A/B 그룹이었는지(ab_variant)를 남기는 데 쓴다."""
+    attrs = getattr(trace, "attrs", None)
+    if attrs is not None:
+        attrs["metadata"] = {**(attrs.get("metadata") or {}), **{k: str(v) for k, v in meta.items()}}
 
 
 def trace_meta(trace):
