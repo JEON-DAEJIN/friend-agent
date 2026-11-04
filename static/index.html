@@ -601,7 +601,9 @@ async function handlePaymentReturn() {
       const r = await api("/api/payments/confirm", {method: "POST", raw: true,
         body: JSON.stringify({paymentKey: q.get("paymentKey"), orderId: q.get("orderId"), amount: Number(q.get("amount"))})});
       const body = await r.json();
-      if (r.ok) await openCredits(`${body.credits.toLocaleString()}개를 충전했어요. 지금 잔액 ${body.balance.toLocaleString()}개예요.`, true);
+      // 새로고침으로 같은 결제를 다시 보내면 서버는 다시 승인하지 않고 already 를 돌려준다(7장). 판단은 문구가 아니라 잔액과 원장으로 한다
+      if (r.ok && body.already) await openCredits(`이미 충전된 결제예요(${body.credits.toLocaleString()}개). 지금 잔액 ${body.balance.toLocaleString()}개예요.`, true);
+      else if (r.ok) await openCredits(`${body.credits.toLocaleString()}개를 충전했어요. 지금 잔액 ${body.balance.toLocaleString()}개예요.`, true);
       else await openCredits(body.message || body.detail || "결제를 확인하지 못했어요.");
     } catch (err) { console.error(err); await openCredits("결제를 확인하지 못했어요. 잠시 뒤 새로고침해 주세요."); }
   } else if (location.pathname === "/payments/fail") {

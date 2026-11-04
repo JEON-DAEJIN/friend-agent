@@ -326,6 +326,10 @@ def confirm_payment(req: ConfirmRequest, user: User = Depends(current_user)):
     if not order:   # 다른 사용자의 주문도 여기서 걸린다(조회에 user_id 조건)
         raise HTTPException(404, "주문을 찾을 수 없습니다")
     if order["status"] == "paid":
+        # 장치 ① 주문 상태: 이미 완료된 주문이면 승인 API를 다시 부르지 않는다(새로고침·두 번 클릭).
+        # 승인 뒤 주문은 완료로 바꿨는데 원장 기록 직전에 멈췄다면 여기서 이어서 쌓는다 — 참조가 유일해서 이미 있으면 쌓이지 않는다
+        if store.add_credit(user.id, order["credits"], "purchase", f"order:{req.orderId}"):
+            log("WARNING", "완료 주문의 빠진 크레딧을 이어서 지급", credits=order["credits"])
         return {"ok": True, "already": True, "credits": order["credits"], "balance": store.credit_balance(user.id)}
     if order["status"] != "pending":
         raise HTTPException(409, "이미 끝난 주문입니다")
@@ -334,9 +338,26 @@ def confirm_payment(req: ConfirmRequest, user: User = Depends(current_user)):
         log("WARNING", "결제 금액 불일치로 승인 중단", order_amount=order["amount"], sent_amount=req.amount)
         return JSONResponse({"error": "amount_mismatch", "message": "주문 금액과 결제 금액이 달라 결제를 진행하지 않았어요."},
                             status_code=400)
+    # 장치 ③ Idempotency-Key: 같은 주문이면 몇 번을 다시 보내도 같은 값(주문 번호 그대로, 사용자 결정).
+    # 요청마다 새로 만들면 다시 보낸 요청도 새 요청이 되어 아무것도 막지 못한다. 오류가 나도 키를 바꾸지 않는다
+    idempotency_key = req.orderId
     try:
-        result = payments.confirm_payment(settings.toss_secret_key, req.paymentKey, req.orderId, order["amount"])
+        for attempt in range(1, 4):
+            log("INFO", "결제 승인 요청", order_id=req.orderId, idempotency_key=idempotency_key, attempt=attempt)
+            try:
+                result = payments.confirm_payment(settings.toss_secret_key, req.paymentKey, req.orderId, order["amount"],
+                                                  idempotency_key)
+                break
+            except payments.TossError as error:
+                # 첫 요청이 아직 처리 중(409): 잠시 뒤 같은 키로 다시 물어 결과를 받는다
+                if error.code != payments.STILL_PROCESSING or attempt == 3:
+                    raise
+                time.sleep(1)
     except payments.TossError as error:
+        if error.code == payments.STILL_PROCESSING:
+            log("WARNING", "결제 승인이 아직 처리 중", order_id=req.orderId)
+            return JSONResponse({"error": "payment_processing", "message": "결제를 처리하고 있어요. 잠시 뒤 이 페이지를 새로고침해 주세요."},
+                                status_code=409)
         store.mark_order_failed(user.id, req.orderId, error.code)
         log("WARNING", "결제 승인 거절", code=error.code, status=error.status)
         return JSONResponse({"error": "payment_rejected", "code": error.code, "message": error.message or "결제가 승인되지 않았어요."},

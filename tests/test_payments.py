@@ -32,8 +32,9 @@ def toss(monkeypatch):
     """승인 API 호출을 가짜로. 토스 결제 승인 응답의 일부 필드(paymentKey·orderId·status·totalAmount·approvedAt) 모양을 따른다."""
     calls = []
 
-    def fake_confirm(secret_key, payment_key, order_id, amount):
-        calls.append({"secret": secret_key, "paymentKey": payment_key, "orderId": order_id, "amount": amount})
+    def fake_confirm(secret_key, payment_key, order_id, amount, idempotency_key):
+        calls.append({"secret": secret_key, "paymentKey": payment_key, "orderId": order_id, "amount": amount,
+                      "idempotencyKey": idempotency_key})
         return {"paymentKey": payment_key, "orderId": order_id, "status": "DONE", "totalAmount": amount,
                 "approvedAt": "2026-11-04T15:00:00+09:00"}
 
@@ -76,7 +77,8 @@ def test_confirm_adds_credits_only_after_approval(uid, toss):
     r = client.post("/api/payments/confirm", json={"paymentKey": "pk_test_1", "orderId": o["orderId"], "amount": 5000})
     assert r.status_code == 200 and r.json()["credits"] == 550
     assert store.credit_balance(uid) == before + 550
-    assert toss == [{"secret": SECRET, "paymentKey": "pk_test_1", "orderId": o["orderId"], "amount": 5000}]
+    assert toss == [{"secret": SECRET, "paymentKey": "pk_test_1", "orderId": o["orderId"], "amount": 5000,
+                     "idempotencyKey": o["orderId"]}]
     saved = store.get_order(uid, o["orderId"])
     assert saved["status"] == "paid" and saved["payment_key"] == "pk_test_1" and saved["approved_at"]
     assert store.credit_history(uid, 1)[0]["ref"] == f"order:{o['orderId']}"

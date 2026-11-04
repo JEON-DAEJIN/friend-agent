@@ -42,12 +42,19 @@ class TossError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def confirm_payment(secret_key, payment_key, order_id, amount):
+# 같은 키로 다시 보냈는데 첫 요청이 아직 처리 중일 때 토스가 409와 함께 돌려주는 코드(학습서 7장)
+STILL_PROCESSING = "IDEMPOTENT_REQUEST_PROCESSING"
+
+
+def confirm_payment(secret_key, payment_key, order_id, amount, idempotency_key):
     """토스 결제 승인 API를 부른다. 성공하면 토스의 결제 객체(dict), 거절이면 TossError.
     네트워크 오류(httpx.HTTPError)는 그대로 올린다 — 승인이 됐는지 모르므로 주문을 실패로 바꾸지 않는다.
+    idempotency_key: 같은 주문의 승인 요청에는 몇 번을 다시 보내도 같은 값이 가야 한다(N056 결정: 주문 번호 그대로).
+    토스는 같은 키·같은 API 키·같은 주소로 온 두 번째 요청을 다시 처리하지 않고 첫 응답을 돌려준다(300자 이하, 15일 유효).
     테스트에서는 이 함수를 가짜로 바꿔 끼운다."""
     r = httpx.post(CONFIRM_URL, timeout=15,
-                   headers={"Authorization": auth_header(secret_key), "Content-Type": "application/json"},
+                   headers={"Authorization": auth_header(secret_key), "Content-Type": "application/json",
+                            "Idempotency-Key": idempotency_key},
                    json={"paymentKey": payment_key, "orderId": order_id, "amount": amount})
     body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
     if r.status_code != 200:
