@@ -39,6 +39,8 @@ class Settings:
     show_turn_panel: bool
     ocr_enabled: bool
     free_credits: int         # 가입 때 원장에 한 번 쌓는 무료 크레딧(N056)
+    toss_client_key: str      # 결제위젯 클라이언트 키(test_gck_…). 화면에 넘겨도 된다
+    toss_secret_key: str      # 결제 승인용 시크릿 키(test_gsk_…). 서버만 읽는다. 화면·로그·/api/config 에 넣지 않는다
 
 
 def load_dotenv(path):
@@ -114,6 +116,9 @@ def load_settings():
         ocr_enabled=env_flag("OCR_ENABLED", False),  # 사진 글자 읽기. tesseract 프로그램이 필요하다
         # 가입 무료 크레딧. 보통 사용자(하루 20개)의 하루 반 분량. 근거는 N056 실습 진행기록 4절
         free_credits=int(os.environ.get("FREE_CREDITS", "30") or 30),
+        # 두 키가 모두 있을 때만 결제를 켠다(없으면 크레딧 팝업에 '결제 준비 중'). 시크릿 키는 Secret Manager 이름으로 연결
+        toss_client_key=os.environ.get("TOSS_CLIENT_KEY", "").strip(),
+        toss_secret_key=os.environ.get("TOSS_SECRET_KEY", "").strip(),
     )
     log("INFO", "앱을 시작합니다.", provider=settings.provider, model=settings.model, env=settings.env,
         storage=settings.storage, auth=settings.auth, turn_panel=settings.show_turn_panel)

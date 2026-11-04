@@ -6,6 +6,8 @@
 - /api/character, /api/settings: 캐릭터와 사용자 설정
 - /api/chat: 메시지 한 턴. 결과를 이벤트(JSON 한 줄씩)로 스트리밍한다. 보내기 전에 크레딧 1개를 서버에서 뺀다
 - /api/credits: 남은 크레딧과 최근 원장 기록
+- /api/products, /api/orders, /api/payments/confirm, /api/payments/fail: 크레딧 결제(토스페이먼츠 결제위젯 v2)
+- /payments/success, /payments/fail: 결제 뒤 토스가 돌려보내는 주소. 화면(/)과 같은 페이지를 보여 준다
 - /api/greeting: 앱을 열 때 먼저 말 걸기
 - /api/ocr: 사진 속 글자 읽기(OCR_ENABLED=true 일 때)
 - /api/memories, /api/reminders, /api/data: 기억, 약속, 내 데이터 관리
@@ -15,22 +17,25 @@ import json
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app import agent, observe, ocr, when
+from app import agent, observe, ocr, payments, when
 from app.auth import Auth, User
 from app.config import ROOT, load_settings
 from app.llm import make_llm
-from app.logs import log
+from app.logs import install_access_log_mask, log
 from app.persona import DEFAULT_CHARACTER, OPTIONS, build_persona, clean_character
 from app.safety import is_crisis
 from app.store.base import make_store
 from app.tools import CITIES
 
 settings = load_settings()  # 꼭 필요한 값이 없으면 여기서 종료한다
+install_access_log_mask()  # 접속 로그 주소의 paymentKey 를 가린다(app/logs.py)
 llm = make_llm(settings)
 store = make_store(settings)
 current_user = Auth(settings)
@@ -96,6 +101,14 @@ def home():
     return page.replace("<!--ENV_BANNER-->", banner)
 
 
+@app.get("/payments/success", response_class=HTMLResponse)
+@app.get("/payments/fail", response_class=HTMLResponse)
+def payment_return():
+    """결제 뒤 토스가 돌려보내는 성공·실패 주소. 같은 화면을 보여 주고, 화면이 주소의 값을 서버로 보낸다.
+    성공 페이지는 크레딧을 직접 늘리지 않는다 — 늘리는 곳은 /api/payments/confirm 한 곳뿐이다."""
+    return home()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -116,6 +129,9 @@ def config():
             "supabase_publishable_key": settings.supabase_publishable_key if settings.auth == "supabase" else "",
             "google_login": settings.google_login, "show_turn_panel": settings.show_turn_panel,
             "ocr_enabled": settings.ocr_enabled,
+            # 결제위젯 클라이언트 키는 화면에 넘겨도 된다. 시크릿 키(TOSS_SECRET_KEY)는 절대 여기에 넣지 않는다.
+            "payments_enabled": bool(settings.toss_client_key and settings.toss_secret_key),
+            "toss_client_key": settings.toss_client_key,
             "options": OPTIONS, "cities": list(CITIES)}
 
 
@@ -258,6 +274,91 @@ def feedback(req: FeedbackRequest, user: User = Depends(current_user)):
     message = own_answer(user, req.message_id)
     scored = observe.score(message["meta"].get("trace_id"), "user-feedback", 1 if req.value == "like" else 0)
     return {"ok": True, "scored": scored}
+
+
+# ── 크레딧 결제(N056) ─────────────────────────────────────────────────
+# 결제 흐름 1~9(학습서 5장). 크레딧을 늘리는 곳은 confirm_payment 한 곳뿐이고, 승인이 성공한 뒤에만 늘린다.
+
+class OrderRequest(BaseModel):
+    product_id: str            # 화면은 상품 ID만 보낸다. 금액·크레딧 수는 서버의 상품표가 정한다
+
+
+class ConfirmRequest(BaseModel):  # successUrl 의 쿼리 그대로(이름도 토스와 같게)
+    paymentKey: str
+    orderId: str
+    amount: int
+
+
+class FailRequest(BaseModel):     # failUrl 의 쿼리 그대로
+    orderId: str
+    code: str = ""
+    message: str = ""
+
+
+def payments_enabled():
+    return bool(settings.toss_client_key and settings.toss_secret_key)
+
+
+@app.get("/api/products")
+def products():
+    return {"payments_enabled": payments_enabled(), "per_message": CREDITS_PER_MESSAGE,
+            "products": [{**p, "unit_price": round(p["amount"] / p["credits"], 1)} for p in payments.PRODUCTS]}
+
+
+@app.post("/api/orders")
+def create_order(req: OrderRequest, user: User = Depends(current_user)):
+    """결제를 시작하기 전에 주문을 대기 상태로 저장한다(시퀀스 2번). 승인할 때 비교할 기준 금액이 된다."""
+    if not payments_enabled():
+        raise HTTPException(503, "결제가 아직 준비되지 않았습니다")
+    product = payments.PRODUCT_BY_ID.get(req.product_id)
+    if not product:
+        raise HTTPException(400, "알 수 없는 상품입니다")
+    order_id = payments.new_order_id()
+    store.create_order(user.id, order_id, product["id"], product["amount"], product["credits"])
+    log("INFO", "주문 저장", product_id=product["id"], amount=product["amount"])
+    return {"orderId": order_id, "orderName": product["name"], "amount": product["amount"], "credits": product["credits"]}
+
+
+@app.post("/api/payments/confirm")
+def confirm_payment(req: ConfirmRequest, user: User = Depends(current_user)):
+    """성공 페이지가 보낸 값으로 결제를 승인하고, 성공하면 주문 완료 + 원장에 +크레딧(시퀀스 6~9번)."""
+    order = store.get_order(user.id, req.orderId)
+    if not order:   # 다른 사용자의 주문도 여기서 걸린다(조회에 user_id 조건)
+        raise HTTPException(404, "주문을 찾을 수 없습니다")
+    if order["status"] == "paid":
+        return {"ok": True, "already": True, "credits": order["credits"], "balance": store.credit_balance(user.id)}
+    if order["status"] != "pending":
+        raise HTTPException(409, "이미 끝난 주문입니다")
+    if req.amount != order["amount"]:
+        # 주소의 amount 는 사용자가 바꿀 수 있다. 저장한 금액과 다르면 승인 API를 부르지 않는다(시퀀스 6번)
+        log("WARNING", "결제 금액 불일치로 승인 중단", order_amount=order["amount"], sent_amount=req.amount)
+        return JSONResponse({"error": "amount_mismatch", "message": "주문 금액과 결제 금액이 달라 결제를 진행하지 않았어요."},
+                            status_code=400)
+    try:
+        result = payments.confirm_payment(settings.toss_secret_key, req.paymentKey, req.orderId, order["amount"])
+    except payments.TossError as error:
+        store.mark_order_failed(user.id, req.orderId, error.code)
+        log("WARNING", "결제 승인 거절", code=error.code, status=error.status)
+        return JSONResponse({"error": "payment_rejected", "code": error.code, "message": error.message or "결제가 승인되지 않았어요."},
+                            status_code=400)
+    except httpx.HTTPError as error:
+        # 승인이 됐는지 모르는 상태다. 주문을 실패로 바꾸지 않고 대기로 둔다(다시 시도하면 이어서 처리)
+        log("ERROR", "결제 승인 응답을 받지 못함", error=type(error).__name__)
+        return JSONResponse({"error": "payment_unknown", "message": "결제 결과를 확인하지 못했어요. 잠시 뒤 이 페이지를 새로고침해 주세요."},
+                            status_code=502)
+    approved_at = datetime.fromisoformat(result["approvedAt"]) if result.get("approvedAt") else datetime.now(timezone.utc)
+    store.mark_order_paid(user.id, req.orderId, req.paymentKey, approved_at)
+    store.add_credit(user.id, order["credits"], "purchase", f"order:{req.orderId}")
+    log("INFO", "결제 승인·크레딧 지급", amount=order["amount"], credits=order["credits"])   # paymentKey·시크릿 키는 남기지 않는다
+    return {"ok": True, "already": False, "credits": order["credits"], "balance": store.credit_balance(user.id)}
+
+
+@app.post("/api/payments/fail")
+def payment_failed(req: FailRequest, user: User = Depends(current_user)):
+    """실패 페이지: 결제를 취소했거나 인증에 실패했다. 승인 API는 부르지 않고 주문만 실패로 바꾼다."""
+    changed = store.mark_order_failed(user.id, req.orderId, req.code[:60] or "UNKNOWN")
+    log("INFO", "결제 실패·취소", code=req.code[:60], changed=changed)
+    return {"ok": True}
 
 
 # ── 기억, 약속, 내 데이터 ───────────────────────────────────────────

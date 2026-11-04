@@ -164,7 +164,29 @@ class SupabaseStore:
                                          "p_free": free})[0]
         return bool(row["ok"]), int(row["balance"])
 
+    # 결제 주문(0003_orders.sql). 상태를 바꿀 때는 status=pending 조건을 붙여, 이미 끝난 주문을 다시 바꾸지 않는다
+    def _order(self, row):
+        return {**row, "created_at": parse_time(row["created_at"]), "approved_at": parse_time(row.get("approved_at"))}
+
+    def create_order(self, uid, order_id, product_id, amount, credits):
+        return self._order(self._insert("orders", {"order_id": order_id, "user_id": uid, "product_id": product_id,
+                                                   "amount": amount, "credits": credits}))
+
+    def get_order(self, uid, order_id):
+        rows = self._get("orders", user_id=f"eq.{uid}", order_id=f"eq.{order_id}", limit=1)
+        return self._order(rows[0]) if rows else None
+
+    def mark_order_paid(self, uid, order_id, payment_key, approved_at):
+        rows = self._update("orders", {"status": "paid", "payment_key": payment_key, "approved_at": iso(approved_at)},
+                            user_id=f"eq.{uid}", order_id=f"eq.{order_id}", status="eq.pending")
+        return bool(rows)
+
+    def mark_order_failed(self, uid, order_id, code):
+        rows = self._update("orders", {"status": "failed", "failure_code": code},
+                            user_id=f"eq.{uid}", order_id=f"eq.{order_id}", status="eq.pending")
+        return bool(rows)
+
     def delete_all(self, uid):
-        # credit_ledger 는 지우지 않는다(0002_credits.sql 머리말의 이유)
+        # credit_ledger·orders 는 지우지 않는다(0002_credits.sql 머리말의 이유 — 결제 기록도 같다)
         for table in ("messages", "summaries", "memories", "reminders", "characters", "user_settings"):
             self._delete(table, user_id=f"eq.{uid}")

@@ -22,6 +22,7 @@ class MemoryStore:
         self.ids = itertools.count(1)
         self.users = {}
         self.ledger = []   # 크레딧 원장. delete_all 이 지우지 않도록 사용자 데이터와 따로 둔다(0002_credits.sql 과 같은 규칙)
+        self.orders = {}   # 결제 주문(0003_orders.sql). 원장과 같은 이유로 delete_all 이 지우지 않는다
 
     def _user(self, uid):
         return self.users.setdefault(uid, {
@@ -146,6 +147,33 @@ class MemoryStore:
                 return False, balance
             self._add_credit(uid, -amount, reason, ref)
             return True, balance - amount
+
+    # 결제 주문: 상태는 pending → paid 또는 failed. 바꿀 때는 pending 일 때만 바꾼다(이미 끝난 주문은 그대로)
+    def create_order(self, uid, order_id, product_id, amount, credits):
+        with self.lock:
+            o = {"order_id": order_id, "user_id": uid, "product_id": product_id, "amount": amount, "credits": credits,
+                 "status": "pending", "payment_key": None, "approved_at": None, "failure_code": None,
+                 "created_at": utcnow()}
+            self.orders[order_id] = o
+        return dict(o)
+
+    def get_order(self, uid, order_id):
+        o = self.orders.get(order_id)
+        return dict(o) if o and o["user_id"] == uid else None
+
+    def _finish_order(self, uid, order_id, **values):
+        with self.lock:
+            o = self.orders.get(order_id)
+            if not o or o["user_id"] != uid or o["status"] != "pending":
+                return False
+            o.update(values)
+            return True
+
+    def mark_order_paid(self, uid, order_id, payment_key, approved_at):
+        return self._finish_order(uid, order_id, status="paid", payment_key=payment_key, approved_at=approved_at)
+
+    def mark_order_failed(self, uid, order_id, code):
+        return self._finish_order(uid, order_id, status="failed", failure_code=code)
 
     def delete_all(self, uid):
         self.users.pop(uid, None)
