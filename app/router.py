@@ -31,6 +31,9 @@ REMINDER_REQUEST = re.compile(r"알려|알림|리마인드|깨워|잊지|말해\
                               r"|약속\s*으로|약속\s*(잡아|만들어|넣어)")
 # 약속 목록 조회는 묻는 말일 때만 한다. "나 다음주 토요일에 이사 가" 같은 평서문에 모델이 골라도 코드가 막는다.
 QUESTION_WORDS = re.compile(r"[?？]|뭐|무엇|언제|있어|있지|있었|알려|보여|확인|기억|했지|했더라|목록|몇")
+# 약속·일정을 묻는 말. N057 실습: "일주일 내 나의 일정을 한번 알려줘"에 모델이 조회 도구를 안 고르고 대화 기억만으로 답해
+# 저장된 "물 마시기"가 빠졌다. 이런 물음에는 코드가 조회 도구를 넣어 답이 늘 저장된 약속을 보고 만들어지게 한다.
+SCHEDULE_WORDS = re.compile(r"일정|약속|알림|리마인드|스케줄|할\s*일")
 
 
 ROUTER_PROMPT_NAME = "tool-router"   # Langfuse 프롬프트 이름. 도구 목록 자리는 {{tools}} 변수다.
@@ -207,6 +210,13 @@ def choose(message, history, now, location, llm, label=None, version=None):
         for tool in result.tools:
             if tool["name"] == "create_reminder" and (changed := fix_reminder_date(message, tool["args"], now)):
                 result.guards.append(f"약속 날짜가 {changed[0]}로 잡혀 메시지의 날짜 표현({changed[1]})과 달라 고쳤습니다.")
+
+    # 안전장치: 약속·일정을 묻는데 모델이 아무 약속 도구도 고르지 않았으면 조회 도구를 넣는다(말로 지어낸 목록 대신 저장된 약속으로 답한다)
+    reminder_tools = {"create_reminder", "cancel_reminder", "list_reminders"}
+    if result.decided_by == "model" and SCHEDULE_WORDS.search(message) and QUESTION_WORDS.search(message) \
+            and not any(t["name"] in reminder_tools for t in result.tools) and len(result.tools) < MAX_TOOLS:
+        result.tools.append({"name": "list_reminders", "args": {}})
+        result.guards.append("약속·일정을 묻는데 모델이 조회 도구를 고르지 않아 약속 목록 조회를 넣었습니다.")
 
     # 안전장치: 확신이 낮으면 도구를 쓰지 않고 되묻는다
     if result.confidence < CONFIDENCE_THRESHOLD:
