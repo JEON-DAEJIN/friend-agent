@@ -23,11 +23,18 @@ KEYWORDS = {
 # "토요일 날씨 알려 줘"는 약속이 아니다. 약속은 "~라고 알려 줘", "잊지 않게", "리마인드"처럼 부탁하는 말이 있어야 한다.
 ASK_PATTERN = re.compile(r"(라고|으라고|하라고)\s*(꼭\s*)?(알려|말해)|잊지 않게|리마인드|깨워")
 CANCEL_WORDS = ["취소", "지워", "없던 걸로", "안 알려 줘도", "안 알려줘도"]
+SCHEDULE_WORDS = re.compile(r"일정|약속|알림|리마인드|스케줄|할\s*일")
 LIST_PATTERN = re.compile(r"(약속|알림|리마인드).*(뭐|목록|있어|있지|있었|보여|확인)")
 # 약속 저장은 사용자가 알려 달라고 분명히 부탁했을 때만 한다. 모델이 지시문을 어기고 골라도 코드가 막는 기준이다.
-REMINDER_REQUEST = re.compile(r"알려|알림|리마인드|깨워|잊지|말해\s*줘|말해\s*주")
+# N059: 모델은 "기억해 줘·저장해 줘·잡아 줘"에 약속 저장을 맞게 골랐는데(8개 중 8개) 이 목록에 그 말이 없어 코드가 모두 뺐다.
+# 그래서 약속을 맡기는 말(기억·저장·등록해 줘, 약속으로, 약속·일정 잡아 줘)도 부탁으로 본다. "이사 가", "사진 저장했어"는 여전히 막힌다.
+REMINDER_REQUEST = re.compile(r"알려|알림|리마인드|깨워|잊지|말해\s*줘|말해\s*주|약속\s*으로|(약속|일정)\s*(잡아|만들어|넣어)")
+# "기억해 줘·저장해 줘·잡아 줘"는 날짜·시각이 함께 있을 때만 약속 부탁으로 본다. "이 얘기 기억해 줘, 나 고양이 알레르기 있어"는 사람 정보를 기억하라는 말이지
+# 약속이 아니다(N059 실험1에서 이 말에 약속 저장이 붙는 후퇴가 정상 항목 N13에서 3회 모두 나왔다).
+SAVE_REQUEST = re.compile(r"(기억|저장|등록)\s*해\s*(줘|주)|잡아\s*줘")
 # 약속 목록 조회는 묻는 말일 때만 한다. "나 다음주 토요일에 이사 가" 같은 평서문에 모델이 골라도 코드가 막는다.
-QUESTION_WORDS = re.compile(r"[?？]|뭐|무엇|언제|있어|있지|있었|알려|보여|확인|기억|했지|했더라|목록|몇")
+# N059: "저장된 약속 전부 다시 읽어 줘"에 모델은 조회를 맞게 골랐는데 이 목록에 '읽어 줘'가 없어 코드가 뺐다(약속·일정 조회 3개 중 2개).
+QUESTION_WORDS = re.compile(r"[?？]|뭐|무엇|언제|있어|있지|있었|알려|보여|확인|기억|했지|했더라|목록|몇|읽어\s*(줘|주)")
 
 
 ROUTER_PROMPT_NAME = "tool-router"   # Langfuse 프롬프트 이름. 도구 목록 자리는 {{tools}} 변수다.
@@ -188,7 +195,8 @@ def choose(message, history, now, location, llm, label=None, version=None):
         result = rule_choose(message, now, location)
 
     # 안전장치: 알려 달라는 부탁이 없는데 모델이 약속 저장을 골랐으면 뺀다("나 다음 주 토요일에 이사 가"는 일정 이야기일 뿐이다)
-    if result.decided_by == "model" and not REMINDER_REQUEST.search(message) \
+    asked = REMINDER_REQUEST.search(message) or (SAVE_REQUEST.search(message) and when.parse_when(message, now))
+    if result.decided_by == "model" and not asked \
             and any(t["name"] == "create_reminder" for t in result.tools):
         result.tools = [t for t in result.tools if t["name"] != "create_reminder"]
         result.guards.append("알려 달라는 부탁이 없는데 모델이 약속 저장을 골라서 뺐습니다.")
@@ -198,6 +206,14 @@ def choose(message, history, now, location, llm, label=None, version=None):
             and any(t["name"] == "list_reminders" for t in result.tools):
         result.tools = [t for t in result.tools if t["name"] != "list_reminders"]
         result.guards.append("묻는 말이 아닌데 모델이 약속 목록 조회를 골라서 뺐습니다.")
+
+    # 안전장치: 약속·일정을 묻는데 모델이 아무 약속 도구도 고르지 않았으면 조회 도구를 넣는다(N059 P11 "이번 주 내 일정 한번 알려줘":
+    # 도구 없이 대화에 나온 이야기만으로 답하면 저장된 약속이 빠지거나 "기억할 수 없다"는 거짓 답이 나온다)
+    reminder_tools = {"create_reminder", "cancel_reminder", "list_reminders"}
+    if result.decided_by == "model" and SCHEDULE_WORDS.search(message) and QUESTION_WORDS.search(message) \
+            and not any(t["name"] in reminder_tools for t in result.tools) and len(result.tools) < MAX_TOOLS:
+        result.tools.append({"name": "list_reminders", "args": {}})
+        result.guards.append("약속·일정을 묻는데 모델이 조회 도구를 고르지 않아 약속 목록 조회를 넣었습니다.")
 
     # 안전장치: 부탁은 했는데 날짜가 메시지의 날짜 표현과 다르면 날짜를 규칙 계산으로 고친다
     if result.decided_by == "model":
