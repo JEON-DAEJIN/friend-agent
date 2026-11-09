@@ -27,8 +27,10 @@ LIST_PATTERN = re.compile(r"(약속|알림|리마인드).*(뭐|목록|있어|있
 # 약속 저장은 사용자가 알려 달라고 분명히 부탁했을 때만 한다. 모델이 지시문을 어기고 골라도 코드가 막는 기준이다.
 # N059: 모델은 "기억해 줘·저장해 줘·잡아 줘"에 약속 저장을 맞게 골랐는데(8개 중 8개) 이 목록에 그 말이 없어 코드가 모두 뺐다.
 # 그래서 약속을 맡기는 말(기억·저장·등록해 줘, 약속으로, 약속·일정 잡아 줘)도 부탁으로 본다. "이사 가", "사진 저장했어"는 여전히 막힌다.
-REMINDER_REQUEST = re.compile(r"알려|알림|리마인드|깨워|잊지|말해\s*줘|말해\s*주"
-                              r"|(기억|저장|등록)\s*해\s*(줘|주)|약속\s*으로|(약속|일정)\s*(잡아|만들어|넣어)|잡아\s*줘")
+REMINDER_REQUEST = re.compile(r"알려|알림|리마인드|깨워|잊지|말해\s*줘|말해\s*주|약속\s*으로|(약속|일정)\s*(잡아|만들어|넣어)")
+# "기억해 줘·저장해 줘·잡아 줘"는 날짜·시각이 함께 있을 때만 약속 부탁으로 본다. "이 얘기 기억해 줘, 나 고양이 알레르기 있어"는 사람 정보를 기억하라는 말이지
+# 약속이 아니다(N059 실험1에서 이 말에 약속 저장이 붙는 후퇴가 정상 항목 N13에서 3회 모두 나왔다).
+SAVE_REQUEST = re.compile(r"(기억|저장|등록)\s*해\s*(줘|주)|잡아\s*줘")
 # 약속 목록 조회는 묻는 말일 때만 한다. "나 다음주 토요일에 이사 가" 같은 평서문에 모델이 골라도 코드가 막는다.
 QUESTION_WORDS = re.compile(r"[?？]|뭐|무엇|언제|있어|있지|있었|알려|보여|확인|기억|했지|했더라|목록|몇")
 
@@ -191,7 +193,8 @@ def choose(message, history, now, location, llm, label=None, version=None):
         result = rule_choose(message, now, location)
 
     # 안전장치: 알려 달라는 부탁이 없는데 모델이 약속 저장을 골랐으면 뺀다("나 다음 주 토요일에 이사 가"는 일정 이야기일 뿐이다)
-    if result.decided_by == "model" and not REMINDER_REQUEST.search(message) \
+    asked = REMINDER_REQUEST.search(message) or (SAVE_REQUEST.search(message) and when.parse_when(message, now))
+    if result.decided_by == "model" and not asked \
             and any(t["name"] == "create_reminder" for t in result.tools):
         result.tools = [t for t in result.tools if t["name"] != "create_reminder"]
         result.guards.append("알려 달라는 부탁이 없는데 모델이 약속 저장을 골라서 뺐습니다.")
