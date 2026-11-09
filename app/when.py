@@ -4,7 +4,7 @@
 fake 모드(모델 없음)에서는 아래 규칙으로 흔한 표현만 읽는다.
 """
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 WEEKDAYS = "월화수목금토일"
@@ -39,8 +39,34 @@ def calendar_hint(now, days=14):
     return f"오늘은 {date_label(now.date())}이다. 한 주는 월요일에 시작한다.\n" + "\n".join(rows)
 
 
+MONTH_DAY_PATTERN = re.compile(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+
+
+def month_day_offset(text, now):
+    """'11월 7일' 같은 달력 날짜를 오늘로부터 며칠 뒤인지로 바꾼다. 이미 지난 날짜면 내년으로 본다. 없거나 없는 날짜(2월 30일)면 None.
+    N057 실습: 이 표현을 몰라서 '11월 7일 오전 10시 30분'을 '오늘 10:30 → 지났으니 내일(11/6)'로 읽었고,
+    fix_reminder_date 가 모델의 맞는 날짜(11/7)를 이 틀린 날짜로 덮어썼다."""
+    m = MONTH_DAY_PATTERN.search(text)
+    if not m:
+        return None
+    try:
+        target = date(now.year, int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return None
+    if target < now.date():
+        try:
+            target = target.replace(year=now.year + 1)
+        except ValueError:  # 내년에는 없는 2월 29일
+            return None
+    return (target - now.date()).days
+
+
 def day_offset(text, now):
-    """오늘/내일/모레/요일 표현을 오늘로부터 며칠 뒤인지로 바꾼다. 없으면 None."""
+    """달력 날짜('11월 7일')·오늘/내일/모레/요일 표현을 오늘로부터 며칠 뒤인지로 바꾼다. 없으면 None.
+    달력 날짜가 있으면 그것을 먼저 쓴다(가장 분명한 표현이므로)."""
+    offset = month_day_offset(text, now)
+    if offset is not None:
+        return offset
     for word, offset in DAY_WORDS.items():
         if word in text:
             return offset
