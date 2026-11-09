@@ -4,6 +4,7 @@
 약속 도구는 외부를 부르지 않고 저장소에만 쓴다.
 각 도구는 모델이 읽을 한 문장 요약(summary)과 화면에 보여 줄 원본(data)을 함께 돌려준다.
 """
+import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -267,7 +268,9 @@ def cancel_reminder(args, ctx):
     query = str(args.get("query") or "").strip()
     items = ctx.store.list_reminders(ctx.user_id, status="pending")
     match = next((r for r in items if query and (query in r["text"] or r["text"] in query)), None)
-    if not match and len(items) == 1:
+    # N059: 이름이 안 맞아도 약속이 하나뿐이면 그것을 취소하던 규칙이 "치과 약속 취소"에 '팀 회의'를 지웠다.
+    # 이제는 "그 약속", "아까 한 약속"처럼 어떤 약속인지 가리키는 말이 없을 때만 하나뿐인 약속을 취소한다.
+    if not match and len(items) == 1 and not re.sub(r"약속|알림|리마인드|일정|아까|방금|그|저|이|한|거|것|저장|해|줘|\s", "", query):
         match = items[0]
     if not match:
         return ToolResult("cancel_reminder", False, f"'{query}'에 해당하는 약속을 찾지 못했습니다.")
