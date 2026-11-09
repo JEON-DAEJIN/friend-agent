@@ -1,0 +1,30 @@
+{"id": "P01", "message": "11월 20일 오후 3시에 치과 예약 있다고 기억해 줘", "history": [], "expected_tools": ["create_reminder"], "optional_tools": [], "expected_args": {"create_reminder": {"due_at": "2026-11-20T15:00", "text": "치과"}}, "note": "N059 직5 — 기억해 줘"}
+{"id": "P02", "message": "다음 주 월요일 오전 10시에 거래처 미팅 저장해 줘", "history": [], "expected_tools": ["create_reminder"], "optional_tools": [], "expected_args": {"create_reminder": {"due_at": "2026-10-19T10:00"}}, "note": "저장해 줘"}
+{"id": "P03", "message": "내일 오후 2시에 면접 있어, 약속으로 잡아 줘", "history": [], "expected_tools": ["create_reminder"], "optional_tools": [], "expected_args": {"create_reminder": {"due_at": "2026-10-13T14:00"}}, "note": "잡아 줘"}
+{"id": "P04", "message": "11월 3일 오전 9시에 세금 신고 기억해 줘", "history": [], "expected_tools": ["create_reminder"], "optional_tools": [], "expected_args": {"create_reminder": {"due_at": "2026-11-03T09:00"}}, "note": "기억해 줘"}
+{"id": "P05", "message": "금요일 저녁 6시에 동창 모임 등록해 줘", "history": [], "expected_tools": ["create_reminder"], "optional_tools": [], "expected_args": {"create_reminder": {"due_at": "2026-10-16T18:00"}}, "note": "등록해 줘"}
+{"id": "P06", "message": "모레 아침 8시 병원 예약 기억해 줘", "history": [], "expected_tools": ["create_reminder"], "optional_tools": [], "expected_args": {"create_reminder": {"due_at": "2026-10-14T08:00"}}, "note": "기억해 줘"}
+{"id": "P07", "message": "12월 5일 오후 1시에 친구 결혼식 저장해 줘", "history": [], "expected_tools": ["create_reminder"], "optional_tools": [], "expected_args": {"create_reminder": {"due_at": "2026-12-05T13:00"}}, "note": "저장해 줘"}
+{"id": "P08", "message": "내일 점심 12시에 팀 점심 약속 잡아 줘", "history": [], "expected_tools": ["create_reminder"], "optional_tools": [], "expected_args": {"create_reminder": {"due_at": "2026-10-13T12:00"}}, "note": "약속 잡아 줘"}
+{"id": "P09", "message": "지금 저장된 약속 전부 다시 읽어 줘", "history": [], "expected_tools": ["list_reminders"], "optional_tools": [], "expected_args": {}, "note": "N059 직8"}
+{"id": "P10", "message": "내 일정 뭐 있는지 알려줘", "history": [], "expected_tools": ["list_reminders"], "optional_tools": [], "expected_args": {}, "note": "N059 직6"}
+{"id": "P11", "message": "이번 주 내 일정 한번 알려줘", "history": [], "expected_tools": ["list_reminders"], "optional_tools": [], "expected_args": {}, "note": "N057 때 조회 안 한 문장과 같은 종류"}
+{"id": "P12", "message": "저장해 둔 약속들 확인해 줘", "history": [], "expected_tools": ["list_reminders"], "optional_tools": [], "expected_args": {}, "note": ""}
+{"id": "P13", "message": "내 약속 다시 읽어 줘", "history": [], "expected_tools": ["list_reminders"], "optional_tools": [], "expected_args": {}, "note": ""}
+{"id": "P14", "message": "치과 약속은 취소할래", "history": [], "expected_tools": ["cancel_reminder"], "optional_tools": [], "expected_args": {}, "note": "N059 직9"}
+{"id": "P15", "message": "아까 한 약속 저장한 거 지워 줘", "history": [], "expected_tools": ["cancel_reminder"], "optional_tools": [], "expected_args": {}, "note": "N059 경9"}
+{"id": "N01", "message": "나 다음 주 토요일에 이사 가", "history": [], "expected_tools": [], "optional_tools": [], "expected_args": {}, "note": "일정 이야기일 뿐 저장하면 안 됨"}
+{"id": "N02", "message": "내 이름은 민수야. 기억해 줘", "history": [], "expected_tools": [], "optional_tools": [], "expected_args": {}, "note": "사람 정보 기억 부탁이지 약속이 아님"}
+{"id": "N03", "message": "내일 아침 8시에 물 마시라고 알려 줘", "history": [], "expected_tools": ["create_reminder"], "optional_tools": [], "expected_args": {"create_reminder": {"due_at": "2026-10-13T08:00"}}, "note": "기존에 잘 되던 알림 저장"}
+{"id": "N04", "message": "엄마 생일이 11월 3일이야", "history": [], "expected_tools": [], "optional_tools": [], "expected_args": {}, "note": "날짜가 있는 평서문"}
+{"id": "N05", "message": "방금 찍은 사진 저장했어", "history": [], "expected_tools": [], "optional_tools": [], "expected_args": {}, "note": "저장했어는 약속 부탁이 아님"}
+{"id": "N06", "message": "내일 비 와?", "history": [], "expected_tools": ["get_weather"], "optional_tools": [], "expected_args": {}, "note": ""}
+{"id": "N07", "message": "다음 공휴일 언제야?", "history": [], "expected_tools": ["get_holidays"], "optional_tools": [], "expected_args": {}, "note": ""}
+{"id": "N08", "message": "오늘 하루 너무 길었어", "history": [], "expected_tools": [], "optional_tools": [], "expected_args": {}, "note": ""}
+{"id": "N09", "message": "내일 치과 가야 하는데 가기 싫다", "history": [], "expected_tools": [], "optional_tools": [], "expected_args": {}, "note": "일정 이야기·하소연"}
+{"id": "N10", "message": "30분 뒤에 빨래 꺼내라고 알려줘", "history": [], "expected_tools": ["create_reminder"], "optional_tools": [], "expected_args": {"create_reminder": {"due_at": "2026-10-12T14:30"}}, "note": "기존에 잘 되던 상대 시각"}
+{"id": "N11", "message": "내 약속 뭐 있어?", "history": [], "expected_tools": ["list_reminders"], "optional_tools": [], "expected_args": {}, "note": "기존에 잘 되던 조회"}
+{"id": "N12", "message": "엄마한테 전화하는 알림 취소해 줘", "history": [], "expected_tools": ["cancel_reminder"], "optional_tools": [], "expected_args": {}, "note": "기존에 잘 되던 취소"}
+{"id": "N13", "message": "이 얘기 기억해 줘, 나 고양이 알레르기 있어", "history": [], "expected_tools": [], "optional_tools": [], "expected_args": {}, "note": "사람 정보 기억 부탁"}
+{"id": "N14", "message": "12월 24일에 크리스마스 파티 간다", "history": [], "expected_tools": [], "optional_tools": [], "expected_args": {}, "note": "날짜가 있는 평서문"}
+{"id": "N15", "message": "금요일 저녁에 친구 만나기로 했어", "history": [], "expected_tools": [], "optional_tools": [], "expected_args": {}, "note": "일정 이야기"}
