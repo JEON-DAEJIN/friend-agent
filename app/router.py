@@ -23,6 +23,7 @@ KEYWORDS = {
 # "토요일 날씨 알려 줘"는 약속이 아니다. 약속은 "~라고 알려 줘", "잊지 않게", "리마인드"처럼 부탁하는 말이 있어야 한다.
 ASK_PATTERN = re.compile(r"(라고|으라고|하라고)\s*(꼭\s*)?(알려|말해)|잊지 않게|리마인드|깨워")
 CANCEL_WORDS = ["취소", "지워", "없던 걸로", "안 알려 줘도", "안 알려줘도"]
+SCHEDULE_WORDS = re.compile(r"일정|약속|알림|리마인드|스케줄|할\s*일")
 LIST_PATTERN = re.compile(r"(약속|알림|리마인드).*(뭐|목록|있어|있지|있었|보여|확인)")
 # 약속 저장은 사용자가 알려 달라고 분명히 부탁했을 때만 한다. 모델이 지시문을 어기고 골라도 코드가 막는 기준이다.
 # N059: 모델은 "기억해 줘·저장해 줘·잡아 줘"에 약속 저장을 맞게 골랐는데(8개 중 8개) 이 목록에 그 말이 없어 코드가 모두 뺐다.
@@ -205,6 +206,14 @@ def choose(message, history, now, location, llm, label=None, version=None):
             and any(t["name"] == "list_reminders" for t in result.tools):
         result.tools = [t for t in result.tools if t["name"] != "list_reminders"]
         result.guards.append("묻는 말이 아닌데 모델이 약속 목록 조회를 골라서 뺐습니다.")
+
+    # 안전장치: 약속·일정을 묻는데 모델이 아무 약속 도구도 고르지 않았으면 조회 도구를 넣는다(N059 P11 "이번 주 내 일정 한번 알려줘":
+    # 도구 없이 대화에 나온 이야기만으로 답하면 저장된 약속이 빠지거나 "기억할 수 없다"는 거짓 답이 나온다)
+    reminder_tools = {"create_reminder", "cancel_reminder", "list_reminders"}
+    if result.decided_by == "model" and SCHEDULE_WORDS.search(message) and QUESTION_WORDS.search(message) \
+            and not any(t["name"] in reminder_tools for t in result.tools) and len(result.tools) < MAX_TOOLS:
+        result.tools.append({"name": "list_reminders", "args": {}})
+        result.guards.append("약속·일정을 묻는데 모델이 조회 도구를 고르지 않아 약속 목록 조회를 넣었습니다.")
 
     # 안전장치: 부탁은 했는데 날짜가 메시지의 날짜 표현과 다르면 날짜를 규칙 계산으로 고친다
     if result.decided_by == "model":
